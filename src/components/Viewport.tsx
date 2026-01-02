@@ -24,6 +24,11 @@ export const Viewport: React.FC = () => {
         // Initialize Engine
         const engine = new CompositionEngine(canvasRef.current);
         engineRef.current = engine;
+        
+        // Initial Card Set (Crucial for first render)
+        if (activeCard) {
+            engine.setCard(activeCard);
+        }
 
         // Start Engine (which starts camera)
         engine.start()

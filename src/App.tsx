@@ -1,36 +1,26 @@
-import { Layers, Upload, Video } from 'lucide-react';
+import { Layers, Upload, Play } from 'lucide-react';
 import { Viewport } from './components/Viewport';
 import { useAppStore, type Card } from './stores/useAppStore';
-import { CardList } from './components/CardList';
 import { EditorOverlay } from './components/EditorOverlay';
 import { PropertyInspector } from './components/PropertyInspector';
-import { AssetLibrary } from './components/AssetLibrary';
+import { FloatingToolbar } from './components/FloatingToolbar';
+import { Sidebar } from './components/Sidebar';
 import { PresentationParser } from './engine/PresentationParser';
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const addCards = useAppStore(state => state.addCards);
   const addCard = useAppStore(state => state.addCard);
-  const activeCardId = useAppStore(state => state.activeCardId);
   const updateCardElements = useAppStore(state => state.updateCardElements);
-  const cards = useAppStore(state => state.cards);
 
-  const activeCard = cards.find(c => c.id === activeCardId);
-
-  const handleAddCamera = () => {
-      if (!activeCard) return;
-      const newElement = {
-          id: `cam-${Date.now()}`,
-          type: 'camera' as const,
-          content: 'camera',
-          x: 50, y: 50, width: 480, height: 270,
-          rotation: 0,
-          zIndex: 10
-      };
-      updateCardElements(activeCard.id, [...activeCard.elements, newElement]);
-  };
+  // Event Listener for Floating Toolbar Actions
+  useEffect(() => {
+    const handleImageTrigger = () => imageInputRef.current?.click();
+    window.addEventListener('trigger-image-upload', handleImageTrigger);
+    return () => window.removeEventListener('trigger-image-upload', handleImageTrigger);
+  }, []);
 
   const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -60,35 +50,47 @@ function App() {
     }
   };
 
+
+
   const handleImageImport = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (file) {
           const url = URL.createObjectURL(file);
-          addCard({
-              id: `img-${Date.now()}`,
-              type: 'scene',
-              title: file.name,
-              thumbnailUrl: url,
-              elements: [{
-                  id: `el-${Date.now()}`,
-                  type: 'image',
+          const state = useAppStore.getState();
+          const activeCard = state.cards.find(c => c.id === state.activeCardId);
+
+          if (activeCard) {
+              // Add to current card
+              const newElement = {
+                  id: `img-${Date.now()}`,
+                  type: 'image' as const,
                   content: url,
-                  x: 0, y: 0, width: 1920, height: 1080, // Assume full screen for now or generic size
+                  x: 100, y: 100, width: 600, height: 400, // Default sizing
                   rotation: 0,
-                  zIndex: 0
-              }]
-          });
+                  zIndex: (activeCard.elements.length || 0) + 10
+              };
+              updateCardElements(activeCard.id, [...activeCard.elements, newElement]);
+          } else {
+              // Create new card (fallback)
+              addCard({
+                  id: `img-${Date.now()}`,
+                  type: 'scene',
+                  title: file.name,
+                  thumbnailUrl: url,
+                  elements: [{
+                      id: `el-${Date.now()}`,
+                      type: 'image',
+                      content: url,
+                      x: 0, y: 0, width: 1920, height: 1080,
+                      rotation: 0,
+                      zIndex: 0
+                  }]
+              });
+          }
       }
   };
 
-  const handleNewCard = () => {
-      addCard({
-          id: `card-${Date.now()}`,
-          type: 'scene',
-          title: 'Empty Scene',
-          elements: []
-      });
-  };
+
 
   return (
     <div className="min-h-screen bg-[#0d0d0d] text-white overflow-hidden font-sans selection:bg-indigo-500 selection:text-white">
@@ -117,93 +119,50 @@ function App() {
       {/* UI Overlay */}
       <div className="relative z-10 flex flex-col h-screen">
         {/* Header */}
-        <header className="h-14 border-b border-white/10 flex items-center px-4 bg-[#0d0d0d]/80 backdrop-blur-md">
+        <header className="h-14 border-b border-white/5 flex items-center px-4 bg-[#0d0d0d]/80 backdrop-blur-md z-50">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-500/20">
               <Layers className="w-5 h-5 text-white" />
             </div>
-            <span className="font-bold text-lg tracking-tight">FrameFlow</span>
+            <span className="font-bold text-lg tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">FrameFlow</span>
           </div>
           <div className="ml-auto flex items-center gap-4">
               
-              <button 
-                onClick={handleAddCamera}
-                disabled={!activeCard}
-                className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
-                <Video className="w-4 h-4" />
-                + Camera
-             </button>
+             {/* Header Left Actions (File Management) */}
+             <div className="flex items-center gap-2 mr-4 border-r border-white/10 pr-4">
+                 <button 
+                   onClick={() => fileInputRef.current?.click()}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <Upload className="w-3 h-3" />
+                   Import
+                 </button>
+             </div>
 
+             {/* Present Button - Primary Action */}
              <button 
-                onClick={() => {
-                    const state = useAppStore.getState();
-                    if(!state.activeCardId) return;
-                    const newEl = {
-                        id: `txt-${Date.now()}`,
-                        type: 'text' as const,
-                        content: 'New Text',
-                        x: 100, y: 100, width: 300, height: 100,
-                        rotation: 0, zIndex: 20,
-                        fontSize: 40, color: '#ffffff'
-                    };
-                    state.updateCardElements(state.activeCardId, [...(state.cards.find(c => c.id === state.activeCardId)?.elements || []), newEl]);
-                }}
-                disabled={!activeCard}
-                className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2">
-                <span className="font-serif italic font-bold">T</span>
-                + Text
-             </button>
-
-             <button 
-               onClick={handleNewCard}
-               className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm font-medium transition-colors">
-               + Empty Card
-             </button>
-             <button 
-               onClick={() => imageInputRef.current?.click()}
-               className="px-4 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-sm font-medium transition-colors">
-               + Image
-             </button>
-             <button 
-               onClick={() => fileInputRef.current?.click()}
-               className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-medium transition-colors shadow-lg shadow-indigo-500/20 flex items-center gap-2">
-               <Upload className="w-4 h-4" />
-               Import PPTX
+               className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:translate-y-0.5">
+               <Play className="w-4 h-4 fill-current" />
+               Present
              </button>
           </div>
         </header>
 
         {/* Main Workspace */}
         <div className="flex-1 flex overflow-hidden">
-          {/* Sidebar */}
-          <aside className="w-72 border-r border-white/10 bg-[#0d0d0d]/50 flex flex-col">
-             <div className="p-4 border-b border-white/10">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Scene & Assets</h3>
-             </div>
-             
-             {/* Scene Sources */}
-             <div className="p-2 space-y-1 border-b border-white/10">
-                 <AssetLibrary />
-             </div>
-
-             {/* Cards List */}
-             <div className="flex-1 overflow-hidden flex flex-col">
-                 <div className="p-2 bg-black/20 text-xs font-semibold text-gray-500 uppercase">
-                    Cards
-                 </div>
-                 <CardList />
-             </div>
-          </aside>
-
+          {/* New Sidebar */}
+          <Sidebar />
 
           {/* Canvas Viewport */}
-          <main className="flex-1 relative bg-black/50 m-4 rounded-2xl border border-white/10 overflow-hidden shadow-2xl flex flex-col">
+          <main className="flex-1 relative bg-black/50 m-4 rounded-2xl border border-white/5 overflow-hidden shadow-2xl flex flex-col group">
              <Viewport />
              <EditorOverlay />
+             
+             {/* Floating Toolbar - Injected over the canvas */}
+             <FloatingToolbar />
           </main>
 
           {/* Properties Panel */}
-          <aside className="w-72 border-l border-white/10 bg-[#0d0d0d]/50">
+          <aside className="w-72 border-l border-white/5 bg-[#0d0d0d]/50 backdrop-blur-sm">
              <PropertyInspector />
           </aside>
         </div>

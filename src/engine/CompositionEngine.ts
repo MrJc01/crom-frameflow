@@ -18,12 +18,21 @@ export interface SceneElement {
   fontFamily?: string;
   color?: string;
   textAlign?: 'left' | 'center' | 'right';
+  // Video Props
+  sourceType?: 'camera' | 'display';
+  deviceId?: string;
 }
 
 export interface EngineCard {
     id: string;
     type: 'scene';
     elements: SceneElement[];
+    width?: number;
+    height?: number;
+    backgroundColor?: string;
+    layoutMode?: 'fixed' | 'infinite';
+    viewportX?: number;
+    viewportY?: number;
 }
 
 export class CompositionEngine {
@@ -51,15 +60,26 @@ export class CompositionEngine {
   async start(): Promise<void> {
     if (this.isRunning) return;
     
-    await this.cameraManager.start();
+    // Check if we have an active card with camera elements and start them?
+    // Usually setCard is called before start or right after.
     
     this.isRunning = true;
+    
+    // Listen for UI requests to start screen share
+    window.addEventListener('frameflow:start-screen-share', (e: any) => {
+        const { elementId } = e.detail;
+        this.cameraManager.startScreenShare(elementId)
+            .catch(err => console.error("Failed to start screen share", err));
+    });
+
     this.loop();
   }
 
   setCard(card: EngineCard | null) {
+      if (this.activeCard === card) return; // No change
+      
       this.activeCard = card;
-      // Preload images
+      // Preload images & Initialize Cameras
       if (card) {
           card.elements.forEach(el => {
               if (el.type === 'image' && !this.imageCache.has(el.content)) {
@@ -67,6 +87,30 @@ export class CompositionEngine {
                   img.src = el.content;
                   img.onload = () => { /* loaded */ };
                   this.imageCache.set(el.content, img);
+              }
+              
+              if (el.type === 'camera') {
+                   // Check if source needs update
+                   const currentSource = this.cameraManager.getSource(el.id);
+                   const targetType = el.sourceType || 'camera';
+                   const targetDevice = el.deviceId;
+
+                   const needsUpdate = !currentSource || 
+                                       currentSource.type !== targetType || 
+                                       (targetType === 'camera' && currentSource.deviceId !== targetDevice);
+
+                   if (needsUpdate) {
+                       if (targetType === 'camera') {
+                            this.cameraManager.startCamera(el.id, targetDevice)
+                                .catch(err => console.error("Failed to update camera source", err));
+                       } else if (targetType === 'display' && !currentSource) {
+                           // For display, we usually wait for user interaction, but if we switched type
+                           // we might want to kill the old camera.
+                           // Actually, we can't auto-start display. Implementation:
+                           // If switching to display, stop camera. UI must trigger startScreenShare.
+                           if (currentSource) this.cameraManager.stop(el.id);
+                       }
+                   }
               }
           });
       }
@@ -78,7 +122,7 @@ export class CompositionEngine {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
-    this.cameraManager.stop();
+    this.cameraManager.stopAll();
     
     if (this.context instanceof CanvasRenderingContext2D || this.context instanceof OffscreenCanvasRenderingContext2D) {
        this.context.fillStyle = '#000';
@@ -93,51 +137,101 @@ export class CompositionEngine {
   };
 
   private async render() {
-    const video = this.cameraManager.getVideoElement();
     const { width, height } = this.canvas;
     const ctx = this.context as CanvasRenderingContext2D;
 
-    // 1. (AI Process Removed)
+    // 1. Clear
+    ctx.clearRect(0, 0, width, height);
 
-    // 2. Clear
-    ctx.fillStyle = '#111';
-    ctx.fillRect(0, 0, width, height);
-
-    // 3. Render Scene
+    // 2. Render Scene
     if (this.activeCard) {
-        // Sort elements by zIndex (Ensure numbers)
+        const isInfinite = this.activeCard.layoutMode === 'infinite';
+        
+        // --- Transform Logic ---
+        let sceneScale = 1;
+        let sceneTx = 0;
+        let sceneTy = 0;
+
+        if (!isInfinite) {
+             const sceneW = this.activeCard.width || 1920;
+             const sceneH = this.activeCard.height || 1080;
+             const padding = 40;
+             const availW = width - padding * 2;
+             const availH = height - padding * 2;
+             
+             if (availW > 0 && availH > 0) {
+                sceneScale = Math.min(availW / sceneW, availH / sceneH);
+                sceneTx = (width - sceneW * sceneScale) / 2;
+                sceneTy = (height - sceneH * sceneScale) / 2;
+             }
+             
+             // Draw Void
+             ctx.save();
+             ctx.fillStyle = '#111';
+             ctx.fillRect(0, 0, width, height);
+             ctx.restore();
+        } else {
+             // Infinite: Just viewport offset
+             sceneTx = -(this.activeCard.viewportX || 0);
+             sceneTy = -(this.activeCard.viewportY || 0);
+        }
+
+        ctx.save(); // Start Scene Transform Block
+        ctx.translate(sceneTx, sceneTy);
+        ctx.scale(sceneScale, sceneScale);
+
+        if (!isInfinite) {
+             // Draw Card Background & Clip within local space
+             const sceneW = this.activeCard.width || 1920;
+             const sceneH = this.activeCard.height || 1080;
+             
+             ctx.beginPath();
+             ctx.rect(0, 0, sceneW, sceneH);
+             ctx.clip();
+             
+             ctx.fillStyle = this.activeCard.backgroundColor || '#000';
+             ctx.fillRect(0, 0, sceneW, sceneH);
+        }
+
+        // Sort elements
         const sortedElements = [...this.activeCard.elements].sort((a, b) => Number(a.zIndex) - Number(b.zIndex));
 
         for (const el of sortedElements) {
             ctx.save();
             
-            // Apply Transform
-            // Pivot is usually center? Or top-left?
-            // Let's assume Top-Left for now, but Center is better for rotation.
-            // If data model x/y is Top-Left:
+            // Elements are positioned in Scene Space.
             const cx = el.x + el.width / 2;
             const cy = el.y + el.height / 2;
-            
+
             ctx.translate(cx, cy);
             ctx.rotate(el.rotation * Math.PI / 180);
             ctx.translate(-cx, -cy);
+            
+            const drawX = el.x;
+            const drawY = el.y;
 
             if (el.type === 'camera') {
-                if (video.readyState === video.HAVE_ENOUGH_DATA) {
-                    this.drawImageProp(ctx, video, el.x, el.y, el.width, el.height);
+                const video = this.cameraManager.getVideoElement(el.id);
+                
+                // Check readyState: 2 = HAVE_CURRENT_DATA, 4 = HAVE_ENOUGH_DATA
+                if (video && video.readyState >= 2) { 
+                    this.drawImageProp(ctx, video, drawX, drawY, el.width, el.height);
                 } else {
                     ctx.fillStyle = '#222';
-                    ctx.fillRect(el.x, el.y, el.width, el.height);
+                    ctx.fillRect(drawX, drawY, el.width, el.height);
+                    ctx.fillStyle = '#555';
+                    ctx.font = '12px sans-serif';
+                    ctx.fillText(el.sourceType === 'display' ? "Select Screen" : "Loading Camera...", drawX + 10, drawY + 20);
                 }
             } else if (el.type === 'image') {
                 const img = this.imageCache.get(el.content);
                 if (img && img.complete) {
-                    this.drawImageProp(ctx, img, el.x, el.y, el.width, el.height);
+                    this.drawImageProp(ctx, img, drawX, drawY, el.width, el.height);
                 } else {
                     ctx.fillStyle = '#333';
-                    ctx.fillRect(el.x, el.y, el.width, el.height);
+                    ctx.fillRect(drawX, drawY, el.width, el.height);
                     ctx.fillStyle = '#fff';
-                    ctx.fillText("Loading...", el.x + 10, el.y + 20);
+                    ctx.fillText("Loading...", drawX + 10, drawY + 20);
                 }
             } else if (el.type === 'text') {
                 const fontSize = el.fontSize || 30;
@@ -150,19 +244,14 @@ export class CompositionEngine {
                 ctx.font = `${fontSize}px ${fontFamily}`;
                 ctx.fillStyle = color;
                 ctx.textBaseline = 'top';
-                
-                // Multiline support could be added here later
-                ctx.fillText(el.content, el.x, el.y);
+                ctx.fillText(el.content, drawX, drawY);
                 ctx.restore();
             }
 
-            ctx.restore();
+            ctx.restore(); // End Item Transform
         }
-    } else {
-        // Default View: Full Screen Camera
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            this.drawImageProp(ctx, video, 0, 0, width, height);
-        }
+        
+        ctx.restore(); // End Scene Transform (Clip/Scale/Translate)
     }
 
     // 4. Draw FPS
@@ -175,11 +264,7 @@ export class CompositionEngine {
     ctx.fillText(`FPS: ${this.fps}`, 20, 40);
   }
 
-  
-  // ... drawImageProp and resize methods remain the same ...
-  /**
-   * Helper to draw image cover (like CSS object-fit: cover)
-   */
+  // Helper to draw image cover (like CSS object-fit: cover)
   private drawImageProp(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, offsetX: number = 0.5, offsetY: number = 0.5) {
       if (arguments.length === 2) {
           x = y = 0;

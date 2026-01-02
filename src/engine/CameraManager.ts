@@ -1,67 +1,96 @@
-export interface CameraConfig {
-  deviceId?: string;
-  width?: number;
-  height?: number;
-  frameRate?: number;
+export interface VideoSource {
+    id: string; // matches element id
+    type: 'camera' | 'display';
+    deviceId?: string; 
+    stream: MediaStream;
+     videoElement: HTMLVideoElement;
 }
-
+ 
 export class CameraManager {
-  private stream: MediaStream | null = null;
-  private videoElement: HTMLVideoElement;
-
-  constructor() {
-    this.videoElement = document.createElement('video');
-    this.videoElement.autoplay = true;
-    this.videoElement.muted = true;
-    this.videoElement.playsInline = true;
-  }
-
-  async start(config: CameraConfig = {}): Promise<void> {
-    if (this.stream) {
-      this.stop();
-    }
-
-    const constraints: MediaStreamConstraints = {
-      audio: false, // We only care about video for now
-      video: {
-        deviceId: config.deviceId ? { exact: config.deviceId } : undefined,
-        width: config.width ? { ideal: config.width } : { ideal: 1920 },
-        height: config.height ? { ideal: config.height } : { ideal: 1080 },
-        frameRate: config.frameRate ? { ideal: config.frameRate } : { ideal: 60 },
-      },
-    };
-
-    try {
-      this.stream = await navigator.mediaDevices.getUserMedia(constraints);
-      this.videoElement.srcObject = this.stream;
-      
-      // Wait for video to be ready
-      await new Promise<void>((resolve) => {
-        this.videoElement.onloadedmetadata = () => {
-          this.videoElement.play().then(() => resolve());
-        };
+   private sources: Map<string, VideoSource> = new Map();
+ 
+   constructor() {
+     // No default init
+   }
+ 
+   async getDevices() {
+     const devices = await navigator.mediaDevices.enumerateDevices();
+     return devices.filter(d => d.kind === 'videoinput');
+   }
+ 
+   async startCamera(elementId: string, deviceId?: string): Promise<void> {
+     this.stop(elementId); // Stop existing if any
+ 
+     const constraints: MediaStreamConstraints = {
+       audio: false, 
+       video: {
+         deviceId: deviceId ? { exact: deviceId } : undefined,
+         width: { ideal: 1920 },
+         height: { ideal: 1080 },
+         frameRate: { ideal: 60 },
+       },
+     };
+ 
+     const stream = await navigator.mediaDevices.getUserMedia(constraints);
+     await this.setupSource(elementId, 'camera', stream, deviceId);
+   }
+ 
+   async startScreenShare(elementId: string): Promise<void> {
+      this.stop(elementId);
+ 
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: false
       });
       
-      console.log('Camera started', this.stream.getVideoTracks()[0].getSettings());
-    } catch (error) {
-      console.error('Failed to start camera:', error);
-      throw error;
-    }
-  }
+      await this.setupSource(elementId, 'display', stream);
+ 
+      // Handle User stopping share via browser UI
+      stream.getVideoTracks()[0].onended = () => {
+          this.stop(elementId);
+      };
+   }
+ 
+   private async setupSource(id: string, type: 'camera' | 'display', stream: MediaStream, deviceId?: string) {
+       const video = document.createElement('video');
+       video.autoplay = true;
+       video.muted = true;
+       video.playsInline = true;
+       video.srcObject = stream;
+ 
+       await new Promise<void>((resolve) => {
+           video.onloadedmetadata = () => {
+               video.play().then(() => resolve());
+           };
+       });
+ 
+       this.sources.set(id, {
+           id,
+           type,
+           deviceId,
+           stream,
+           videoElement: video
+       });
+   }
+ 
+   stop(elementId: string): void {
+     const source = this.sources.get(elementId);
+     if (source) {
+       source.stream.getTracks().forEach((track) => track.stop());
+       source.videoElement.srcObject = null;
+       this.sources.delete(elementId);
+     }
+   }
 
-  stop(): void {
-    if (this.stream) {
-      this.stream.getTracks().forEach((track) => track.stop());
-      this.stream = null;
-      this.videoElement.srcObject = null;
-    }
-  }
-
-  getVideoElement(): HTMLVideoElement {
-    return this.videoElement;
-  }
-
-  getStream(): MediaStream | null {
-    return this.stream;
-  }
-}
+   stopAll(): void {
+       this.sources.forEach((_, id) => this.stop(id));
+   }
+ 
+   getVideoElement(elementId: string): HTMLVideoElement | undefined {
+     return this.sources.get(elementId)?.videoElement;
+   }
+ 
+   getSource(elementId: string): VideoSource | undefined {
+       return this.sources.get(elementId);
+   }
+ }
