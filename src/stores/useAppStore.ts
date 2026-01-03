@@ -59,6 +59,36 @@ interface AppState {
   recordingStartTime: number | null;
   setIsRecording: (isRecording: boolean) => void;
   setRecordingStartTime: (time: number | null) => void;
+
+  // Timeline State (NLE)
+  timeline: {
+    tracks: TimelineTrack[];
+    currentTime: number; // ms
+    duration: number; // ms
+    isPlaying: boolean;
+    zoom: number; // pixels per second
+  };
+  setTimelineTime: (time: number) => void;
+  setIsPlaying: (playing: boolean) => void;
+  addTrack: (type: 'video' | 'audio') => void;
+  addClip: (trackId: string, clip: TimelineClip) => void;
+}
+
+export interface TimelineTrack {
+  id: string;
+  type: 'video' | 'audio';
+  clips: TimelineClip[];
+  isMuted?: boolean;
+  isLocked?: boolean;
+}
+
+export interface TimelineClip {
+  id: string;
+  assetId: string;
+  start: number; // ms on timeline
+  duration: number; // ms duration
+  offset: number; // ms offset into source
+  name: string;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -66,6 +96,18 @@ export const useAppStore = create<AppState>((set) => ({
   isStreamActive: false,
   isRecording: false,
   recordingStartTime: null,
+  
+  timeline: {
+    tracks: [
+        { id: 'track-1', type: 'video', clips: [] },
+        { id: 'track-2', type: 'audio', clips: [] }
+    ],
+    currentTime: 0,
+    duration: 30000, // Default 30s
+    isPlaying: false,
+    zoom: 100, // 100px per second default
+  },
+  
   cards: [
       {
           id: 'default-scene',
@@ -141,4 +183,26 @@ export const useAppStore = create<AppState>((set) => ({
 
   setIsRecording: (isRecording) => set({ isRecording }),
   setRecordingStartTime: (time) => set({ recordingStartTime: time }),
+
+  // Timeline Actions
+  setTimelineTime: (time) => set(state => ({ timeline: { ...state.timeline, currentTime: time } })),
+  setIsPlaying: (playing) => set(state => ({ timeline: { ...state.timeline, isPlaying: playing } })),
+  
+  addTrack: (type) => set(state => ({
+      timeline: {
+          ...state.timeline,
+          tracks: [...state.timeline.tracks, { id: `track-${Date.now()}`, type, clips: [] }]
+      }
+  })),
+
+  addClip: (trackId, clip) => set(state => ({
+      timeline: {
+          ...state.timeline,
+          tracks: state.timeline.tracks.map(t => 
+              t.id === trackId 
+              ? { ...t, clips: [...t.clips, clip] }
+              : t
+          )
+      }
+  })),
 }))

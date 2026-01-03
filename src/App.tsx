@@ -156,7 +156,7 @@ function App() {
         </header>
 
         {/* Main Workspace */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden pb-16">
           {/* New Sidebar */}
           <Sidebar />
 
@@ -175,7 +175,7 @@ function App() {
           </aside>
         </div>
 
-        {/* Studio Panel (Bottom) */}
+        {/* Studio Panel (Fixed Overlay) */}
         <StudioPanel />
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { CameraManager } from './CameraManager';
-
+import { db } from '../db/FrameFlowDB';
 // Duplicate of Store types to avoid circular dependencies if strict, 
 // or just re-define for Engine isolation.
 export interface SceneElement {
@@ -48,6 +48,12 @@ export class CompositionEngine {
   private activeCard: EngineCard | null = null;
   private imageCache: Map<string, HTMLImageElement> = new Map();
   private videoCache: Map<string, HTMLVideoElement> = new Map();
+  private assetUrlCache: Map<string, string> = new Map();
+  private mediaRecorder: MediaRecorder | null = null;
+  // Timeline State
+  private renderMode: 'COMPOSITION' | 'TIMELINE' = 'COMPOSITION';
+  private timeline: { tracks: any[], currentTime: number, isPlaying: boolean } = { tracks: [], currentTime: 0, isPlaying: false };
+  private onTimeUpdate: ((time: number) => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -56,6 +62,286 @@ export class CompositionEngine {
     this.context = ctx;
     
     this.cameraManager = new CameraManager();
+  }
+  
+  public setRenderMode(mode: 'COMPOSITION' | 'TIMELINE') {
+      this.renderMode = mode;
+  }
+  
+  public setTimelineState(state: { tracks: any[], currentTime: number, isPlaying: boolean }) {
+      // Sync state from Store
+      this.timeline = state;
+      // If we seek, we might need to force video seek here or in render loop
+  }
+
+  public setTimeUpdateCallback(cb: (time: number) => void) {
+      this.onTimeUpdate = cb;
+  }
+
+  private async render() {
+    if (this.renderMode === 'TIMELINE') {
+        await this.renderTimeline();
+    } else {
+        await this.renderComposition();
+    }
+  }
+
+  private async renderTimeline() {
+      const { width, height } = this.canvas;
+      const ctx = this.context as CanvasRenderingContext2D;
+      
+      // 1. Advance Time if Playing
+      if (this.timeline.isPlaying) {
+          const now = performance.now();
+          const delta = now - this.lastFrameTime; // ms
+          this.timeline.currentTime += delta;
+          
+          if (this.onTimeUpdate) {
+              this.onTimeUpdate(this.timeline.currentTime);
+          }
+      }
+      
+      this.lastFrameTime = performance.now();
+
+      // 2. Clear
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, width, height);
+
+      // 3. Render Clips
+      // Iterate tracks bottom-up
+      for (const track of this.timeline.tracks) {
+          if (track.type !== 'video') continue; // Skip audio for canvas render
+
+          for (const clip of track.clips) {
+              // Check overlap
+              const clipEnd = clip.start + clip.duration;
+              if (this.timeline.currentTime >= clip.start && this.timeline.currentTime < clipEnd) {
+                  // Visible!
+                  const asset = await this.resolveAsset(clip.assetId); // Need a way to get asset blob/url
+                  if (asset) {
+                      const seekTime = (this.timeline.currentTime - clip.start + clip.offset) / 1000;
+                      await this.drawVideoFrame(ctx, asset, seekTime, width, height);
+                  }
+              }
+          }
+      }
+  }
+  
+  // Helper to resolve asset URL (In real app, we need access to FrameFlowDB or a cached map)
+  private async resolveAsset(_assetId: string): Promise<string | null> {
+    if (this.assetUrlCache.has(_assetId)) {
+        return this.assetUrlCache.get(_assetId)!;
+    }
+
+    try {
+        const asset = await db.getAsset(_assetId);
+        if (asset && asset.blob) {
+            const url = URL.createObjectURL(asset.blob);
+            this.assetUrlCache.set(_assetId, url);
+            return url;
+        }
+    } catch (e) {
+        console.warn("Failed to resolve asset", _assetId, e);
+    }
+    return null;
+  }
+
+  private async drawVideoFrame(ctx: CanvasRenderingContext2D, url: string, time: number, w: number, h: number) {
+       let vid = this.videoCache.get(url);
+       if (!vid) {
+           vid = document.createElement('video');
+           vid.src = url;
+           vid.muted = true;
+           vid.playsInline = true;
+           this.videoCache.set(url, vid);
+       }
+       
+       // Hybrid Playback/Seek Logic
+       if (this.timeline.isPlaying) {
+           // If we are "playing", try to let the video play naturally to ensure smooth stream
+           if (vid.paused) vid.play().catch(() => {});
+           
+           // Sync check: If drift is too large, snap it.
+           const drift = vid.currentTime - time;
+           if (Math.abs(drift) > 0.2) {
+               vid.currentTime = time;
+           }
+       } else {
+           // Paused: Precise seeking
+           vid.pause();
+           if (Math.abs(vid.currentTime - time) > 0.05) {
+               vid.currentTime = time;
+           }
+       }
+       
+       // Draw if we have ANY data (readyState >= 1: HAVE_METADATA is risky, usually 2: HAVE_CURRENT_DATA)
+       // But during seek, it might drop. We try to draw to prevent black frames.
+       if (vid.readyState >= 2 || (vid.readyState >= 1 && vid.currentTime > 0)) {
+           this.drawImageProp(ctx, vid, 0, 0, w, h);
+       }
+  }
+
+  private async renderComposition() {
+    const { width, height } = this.canvas;
+    const ctx = this.context as CanvasRenderingContext2D;
+
+    // 1. Clear
+    ctx.clearRect(0, 0, width, height);
+
+    // 2. Render Scene
+    if (this.activeCard) {
+        const isInfinite = this.activeCard.layoutMode === 'infinite';
+        
+        // --- Transform Logic ---
+        let sceneScale = 1;
+        let sceneTx = 0;
+        let sceneTy = 0;
+
+        if (!isInfinite) {
+             const sceneW = this.activeCard.width || 1920;
+             const sceneH = this.activeCard.height || 1080;
+             const padding = 40;
+             const availW = width - padding * 2;
+             const availH = height - padding * 2;
+             
+             if (availW > 0 && availH > 0) {
+                sceneScale = Math.min(availW / sceneW, availH / sceneH);
+                sceneTx = (width - sceneW * sceneScale) / 2;
+                sceneTy = (height - sceneH * sceneScale) / 2;
+             }
+             
+             // Draw Void
+             ctx.save();
+             ctx.fillStyle = '#111';
+             ctx.fillRect(0, 0, width, height);
+             ctx.restore();
+        } else {
+             // Infinite: Just viewport offset
+             sceneTx = -(this.activeCard.viewportX || 0);
+             sceneTy = -(this.activeCard.viewportY || 0);
+             
+             // Draw Infinite Guide
+             const outW = this.activeCard.width || 1920;
+             const outH = this.activeCard.height || 1080;
+             
+             // Draw Dark Overlay outside the active area
+             ctx.save();
+             ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+             
+             // Top
+             if (height > outH) ctx.fillRect(0, outH, width, height - outH);
+             // Right
+             if (width > outW) ctx.fillRect(outW, 0, width - outW, height);
+             
+             // Draw Guide Border
+             ctx.strokeStyle = '#FF0000';
+             ctx.lineWidth = 2;
+             ctx.setLineDash([10, 5]);
+             ctx.strokeRect(0, 0, outW, outH);
+             
+             // Label
+             ctx.fillStyle = '#FF0000';
+             ctx.font = '12px sans-serif';
+             ctx.fillText("LIVE OUTPUT AREA", 10, 20);
+             
+             ctx.restore();
+        }
+
+        ctx.save(); // Start Scene Transform Block
+        ctx.translate(sceneTx, sceneTy);
+        ctx.scale(sceneScale, sceneScale);
+
+        if (!isInfinite) {
+             // Draw Card Background & Clip within local space
+             const sceneW = this.activeCard.width || 1920;
+             const sceneH = this.activeCard.height || 1080;
+             
+             ctx.beginPath();
+             ctx.rect(0, 0, sceneW, sceneH);
+             ctx.clip();
+             
+             ctx.fillStyle = this.activeCard.backgroundColor || '#000';
+             ctx.fillRect(0, 0, sceneW, sceneH);
+        }
+
+        // Sort elements
+        const sortedElements = [...this.activeCard.elements].sort((a, b) => Number(a.zIndex) - Number(b.zIndex));
+
+        for (const el of sortedElements) {
+            ctx.save();
+            
+            // Elements are positioned in Scene Space.
+            const cx = el.x + el.width / 2;
+            const cy = el.y + el.height / 2;
+
+            ctx.translate(cx, cy);
+            ctx.rotate(el.rotation * Math.PI / 180);
+            ctx.translate(-cx, -cy);
+            
+            const drawX = el.x;
+            const drawY = el.y;
+
+            if (el.type === 'camera') {
+                const video = this.cameraManager.getVideoElement(el.id);
+                // Check readyState
+                if (video && video.readyState >= 2) { 
+                    this.drawImageProp(ctx, video, drawX, drawY, el.width, el.height);
+                } else {
+                    ctx.fillStyle = '#222';
+                    ctx.fillRect(drawX, drawY, el.width, el.height);
+                    ctx.fillStyle = '#555';
+                    ctx.font = '12px sans-serif';
+                    ctx.fillText(el.sourceType === 'display' ? "Select Screen" : "Loading Camera...", drawX + 10, drawY + 20);
+                }
+            } else if (el.type === 'image') {
+                const img = this.imageCache.get(el.content);
+                if (img && img.complete) {
+                    this.drawImageProp(ctx, img, drawX, drawY, el.width, el.height);
+                } else {
+                    ctx.fillStyle = '#333';
+                    ctx.fillRect(drawX, drawY, el.width, el.height);
+                    ctx.fillStyle = '#fff';
+                    ctx.fillText("Loading...", drawX + 10, drawY + 20);
+                }
+            } else if (el.type === 'video') {
+                const vid = this.videoCache.get(el.content);
+                if (vid && vid.readyState >= 2) {
+                    this.drawImageProp(ctx, vid, drawX, drawY, el.width, el.height);
+                } else {
+                     ctx.fillStyle = '#1a1a1a';
+                     ctx.fillRect(drawX, drawY, el.width, el.height);
+                     ctx.fillStyle = '#fff';
+                     ctx.fillText("Loading Video...", drawX + 10, drawY + 20);
+                }
+            } else if (el.type === 'text') {
+                const fontSize = el.fontSize || 30;
+                const fontFamily = el.fontFamily || 'Inter';
+                const color = el.color || 'white';
+                const opacity = el.opacity ?? 1;
+
+                ctx.save();
+                ctx.globalAlpha = opacity;
+                ctx.font = `${fontSize}px ${fontFamily}`;
+                ctx.fillStyle = color;
+                ctx.textBaseline = 'top';
+                ctx.fillText(el.content, drawX, drawY);
+                ctx.restore();
+            }
+
+            ctx.restore(); // End Item Transform
+        }
+        
+        ctx.restore(); // End Scene Transform (Clip/Scale/Translate)
+    }
+
+    // 4. Draw FPS
+    const now = performance.now();
+    this.fps = Math.round(1000 / (now - this.lastFrameTime));
+    this.lastFrameTime = now;
+
+    ctx.fillStyle = '#00ff00';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText(`FPS: ${this.fps}`, 20, 40);
   }
 
   async start(): Promise<void> {
@@ -143,7 +429,7 @@ export class CompositionEngine {
   }
 
   // --- Recording API ---
-  private mediaRecorder: MediaRecorder | null = null;
+  // mediaRecorder is defined at the top
   private recordedChunks: Blob[] = [];
 
   async startRecording(): Promise<void> {
@@ -189,188 +475,16 @@ export class CompositionEngine {
       });
   }
 
+  // --- Stream Access for Preview Monitor ---
+  getStream(): MediaStream {
+      return this.canvas.captureStream(60);
+  }
+
   private loop = async () => {
     if (!this.isRunning) return;
     await this.render();
     this.rafId = requestAnimationFrame(this.loop);
   };
-
-  private async render() {
-    const { width, height } = this.canvas;
-    const ctx = this.context as CanvasRenderingContext2D;
-
-    // 1. Clear
-    ctx.clearRect(0, 0, width, height);
-
-    // 2. Render Scene
-    if (this.activeCard) {
-        const isInfinite = this.activeCard.layoutMode === 'infinite';
-        
-        // --- Transform Logic ---
-        let sceneScale = 1;
-        let sceneTx = 0;
-        let sceneTy = 0;
-
-        if (!isInfinite) {
-             const sceneW = this.activeCard.width || 1920;
-             const sceneH = this.activeCard.height || 1080;
-             const padding = 40;
-             const availW = width - padding * 2;
-             const availH = height - padding * 2;
-             
-             if (availW > 0 && availH > 0) {
-                sceneScale = Math.min(availW / sceneW, availH / sceneH);
-                sceneTx = (width - sceneW * sceneScale) / 2;
-                sceneTy = (height - sceneH * sceneScale) / 2;
-             }
-             
-             // Draw Void
-             ctx.save();
-             ctx.fillStyle = '#111';
-             ctx.fillRect(0, 0, width, height);
-             ctx.restore();
-        } else {
-             // Infinite: Just viewport offset
-             sceneTx = -(this.activeCard.viewportX || 0);
-             sceneTy = -(this.activeCard.viewportY || 0);
-             
-             // Draw Infinite Grid (Optional) or Void
-             // ...
-
-             // Draw "Broadcast Guide" (The active output area relative to screen 0,0)
-             // In Infinite Mode, we assume the camera is "looking at" the canvas.
-             // The output is what falls within [0,0, width, height] of the CANVAS (if canvas is 1080p)
-             // OR relative to the viewport settings.
-             
-             // Let's assume the "Output Frame" matches the Card Resolution (e.g., 1920x1080)
-             // and is anchored at (0,0) of the *Canvas/Screen*, effectively making the window a "portal".
-             // As you pan, the world slides past this portal.
-             
-             const outW = this.activeCard.width || 1920;
-             const outH = this.activeCard.height || 1080;
-             
-             // Draw Dark Overlay outside the active area (Letterboxing/Windowing effect)
-             ctx.save();
-             ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-             
-             // Top
-             if (height > outH) ctx.fillRect(0, outH, width, height - outH);
-             // Right
-             if (width > outW) ctx.fillRect(outW, 0, width - outW, height);
-             
-             // Note: If canvas < output, we just don't see the overlay.
-             
-             // Draw Guide Border
-             ctx.strokeStyle = '#FF0000';
-             ctx.lineWidth = 2;
-             ctx.setLineDash([10, 5]);
-             ctx.strokeRect(0, 0, outW, outH);
-             
-             // Label
-             ctx.fillStyle = '#FF0000';
-             ctx.font = '12px sans-serif';
-             ctx.fillText("LIVE OUTPUT AREA", 10, 20);
-             
-             ctx.restore();
-        }
-
-        ctx.save(); // Start Scene Transform Block
-        ctx.translate(sceneTx, sceneTy);
-        ctx.scale(sceneScale, sceneScale);
-
-        if (!isInfinite) {
-             // Draw Card Background & Clip within local space
-             const sceneW = this.activeCard.width || 1920;
-             const sceneH = this.activeCard.height || 1080;
-             
-             ctx.beginPath();
-             ctx.rect(0, 0, sceneW, sceneH);
-             ctx.clip();
-             
-             ctx.fillStyle = this.activeCard.backgroundColor || '#000';
-             ctx.fillRect(0, 0, sceneW, sceneH);
-        }
-
-        // Sort elements
-        const sortedElements = [...this.activeCard.elements].sort((a, b) => Number(a.zIndex) - Number(b.zIndex));
-
-        for (const el of sortedElements) {
-            ctx.save();
-            
-            // Elements are positioned in Scene Space.
-            const cx = el.x + el.width / 2;
-            const cy = el.y + el.height / 2;
-
-            ctx.translate(cx, cy);
-            ctx.rotate(el.rotation * Math.PI / 180);
-            ctx.translate(-cx, -cy);
-            
-            const drawX = el.x;
-            const drawY = el.y;
-
-            if (el.type === 'camera') {
-                const video = this.cameraManager.getVideoElement(el.id);
-                
-                // Check readyState: 2 = HAVE_CURRENT_DATA, 4 = HAVE_ENOUGH_DATA
-                if (video && video.readyState >= 2) { 
-                    this.drawImageProp(ctx, video, drawX, drawY, el.width, el.height);
-                } else {
-                    ctx.fillStyle = '#222';
-                    ctx.fillRect(drawX, drawY, el.width, el.height);
-                    ctx.fillStyle = '#555';
-                    ctx.font = '12px sans-serif';
-                    ctx.fillText(el.sourceType === 'display' ? "Select Screen" : "Loading Camera...", drawX + 10, drawY + 20);
-                }
-            } else if (el.type === 'image') {
-                const img = this.imageCache.get(el.content);
-                if (img && img.complete) {
-                    this.drawImageProp(ctx, img, drawX, drawY, el.width, el.height);
-                } else {
-                    ctx.fillStyle = '#333';
-                    ctx.fillRect(drawX, drawY, el.width, el.height);
-                    ctx.fillStyle = '#fff';
-                    ctx.fillText("Loading...", drawX + 10, drawY + 20);
-                }
-            } else if (el.type === 'video') {
-                const vid = this.videoCache.get(el.content);
-                if (vid && vid.readyState >= 2) {
-                    this.drawImageProp(ctx, vid, drawX, drawY, el.width, el.height);
-                } else {
-                     ctx.fillStyle = '#1a1a1a';
-                     ctx.fillRect(drawX, drawY, el.width, el.height);
-                     ctx.fillStyle = '#fff';
-                     ctx.fillText("Loading Video...", drawX + 10, drawY + 20);
-                }
-            } else if (el.type === 'text') {
-                const fontSize = el.fontSize || 30;
-                const fontFamily = el.fontFamily || 'Inter';
-                const color = el.color || 'white';
-                const opacity = el.opacity ?? 1;
-
-                ctx.save();
-                ctx.globalAlpha = opacity;
-                ctx.font = `${fontSize}px ${fontFamily}`;
-                ctx.fillStyle = color;
-                ctx.textBaseline = 'top';
-                ctx.fillText(el.content, drawX, drawY);
-                ctx.restore();
-            }
-
-            ctx.restore(); // End Item Transform
-        }
-        
-        ctx.restore(); // End Scene Transform (Clip/Scale/Translate)
-    }
-
-    // 4. Draw FPS
-    const now = performance.now();
-    this.fps = Math.round(1000 / (now - this.lastFrameTime));
-    this.lastFrameTime = now;
-
-    ctx.fillStyle = '#00ff00';
-    ctx.font = 'bold 20px monospace';
-    ctx.fillText(`FPS: ${this.fps}`, 20, 40);
-  }
 
   // Helper to draw image cover (like CSS object-fit: cover)
   private drawImageProp(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, offsetX: number = 0.5, offsetY: number = 0.5) {
