@@ -4,7 +4,7 @@ import { CameraManager } from './CameraManager';
 // or just re-define for Engine isolation.
 export interface SceneElement {
   id: string;
-  type: 'camera' | 'image' | 'text';
+  type: 'camera' | 'image' | 'text' | 'video';
   content: string;
   x: number;
   y: number;
@@ -47,6 +47,7 @@ export class CompositionEngine {
   // Card State
   private activeCard: EngineCard | null = null;
   private imageCache: Map<string, HTMLImageElement> = new Map();
+  private videoCache: Map<string, HTMLVideoElement> = new Map();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -88,6 +89,17 @@ export class CompositionEngine {
                   img.onload = () => { /* loaded */ };
                   this.imageCache.set(el.content, img);
               }
+
+              if (el.type === 'video' && !this.videoCache.has(el.content)) {
+                  const vid = document.createElement('video');
+                  vid.src = el.content;
+                  vid.muted = true;
+                  vid.loop = true;
+                  vid.playsInline = true;
+                  vid.autoplay = true;
+                  vid.play().catch(e => console.error("Auto-play failed", e));
+                  this.videoCache.set(el.content, vid);
+              }
               
               if (el.type === 'camera') {
                    // Check if source needs update
@@ -128,6 +140,53 @@ export class CompositionEngine {
        this.context.fillStyle = '#000';
        this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
+  }
+
+  // --- Recording API ---
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: Blob[] = [];
+
+  async startRecording(): Promise<void> {
+      try {
+          const stream = this.canvas.captureStream(60);
+          this.mediaRecorder = new MediaRecorder(stream, {
+              mimeType: 'video/webm;codecs=vp9'
+          });
+
+          this.recordedChunks = [];
+          this.mediaRecorder.ondataavailable = (event) => {
+              if (event.data.size > 0) {
+                  this.recordedChunks.push(event.data);
+              }
+          };
+
+          this.mediaRecorder.start();
+          console.log("Recording started");
+      } catch (err) {
+          console.error("Failed to start recording:", err);
+          throw err;
+      }
+  }
+
+  async stopRecording(): Promise<Blob> {
+      return new Promise((resolve, reject) => {
+          if (!this.mediaRecorder) {
+              reject(new Error("No active recorder"));
+              return;
+          }
+
+          this.mediaRecorder.onstop = () => {
+              const blob = new Blob(this.recordedChunks, {
+                  type: 'video/webm'
+              });
+              this.recordedChunks = [];
+              this.mediaRecorder = null;
+              resolve(blob);
+          };
+
+          this.mediaRecorder.stop();
+          console.log("Recording stopped");
+      });
   }
 
   private loop = async () => {
@@ -271,6 +330,16 @@ export class CompositionEngine {
                     ctx.fillRect(drawX, drawY, el.width, el.height);
                     ctx.fillStyle = '#fff';
                     ctx.fillText("Loading...", drawX + 10, drawY + 20);
+                }
+            } else if (el.type === 'video') {
+                const vid = this.videoCache.get(el.content);
+                if (vid && vid.readyState >= 2) {
+                    this.drawImageProp(ctx, vid, drawX, drawY, el.width, el.height);
+                } else {
+                     ctx.fillStyle = '#1a1a1a';
+                     ctx.fillRect(drawX, drawY, el.width, el.height);
+                     ctx.fillStyle = '#fff';
+                     ctx.fillText("Loading Video...", drawX + 10, drawY + 20);
                 }
             } else if (el.type === 'text') {
                 const fontSize = el.fontSize || 30;

@@ -5,8 +5,10 @@ import { EditorOverlay } from './components/EditorOverlay';
 import { PropertyInspector } from './components/PropertyInspector';
 import { FloatingToolbar } from './components/FloatingToolbar';
 import { Sidebar } from './components/Sidebar';
+import { StudioPanel } from './components/StudioPanel';
 import { PresentationParser } from './engine/PresentationParser';
 import { useRef, useEffect } from 'react';
+import { usePresentationSync } from './hooks/usePresentationSync';
 
 function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -14,6 +16,9 @@ function App() {
   const addCards = useAppStore(state => state.addCards);
   const addCard = useAppStore(state => state.addCard);
   const updateCardElements = useAppStore(state => state.updateCardElements);
+  
+  // Enable Sync
+  usePresentationSync();
 
   // Event Listener for Floating Toolbar Actions
   useEffect(() => {
@@ -140,6 +145,9 @@ function App() {
 
              {/* Present Button - Primary Action */}
              <button 
+               onClick={() => {
+                   window.open('/present', 'FrameFlowPresentation', 'width=1920,height=1080');
+               }}
                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:translate-y-0.5">
                <Play className="w-4 h-4 fill-current" />
                Present
@@ -166,6 +174,9 @@ function App() {
              <PropertyInspector />
           </aside>
         </div>
+
+        {/* Studio Panel (Bottom) */}
+        <StudioPanel />
       </div>
     </div>
   );

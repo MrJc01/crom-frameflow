@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 export interface SceneElement {
   id: string;
-  type: 'camera' | 'image' | 'text';
+  type: 'camera' | 'image' | 'text' | 'video';
   content: string;
   x: number;
   y: number;
@@ -19,6 +19,8 @@ export interface SceneElement {
   // Video Props
   sourceType?: 'camera' | 'display';
   deviceId?: string;
+  // Persistence
+  assetId?: string;
 }
 
 export interface Card {
@@ -50,11 +52,20 @@ interface AppState {
   updateCard: (cardId: string, updates: Partial<Card>) => void
   setActiveCard: (id: string | null) => void
   setSelectedElement: (id: string | null) => void
+  loadProject: (projectData: { cards: Card[] }) => Promise<void>
+  
+  // Recording State
+  isRecording: boolean;
+  recordingStartTime: number | null;
+  setIsRecording: (isRecording: boolean) => void;
+  setRecordingStartTime: (time: number | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
   currentMode: 'edit',
   isStreamActive: false,
+  isRecording: false,
+  recordingStartTime: null,
   cards: [
       {
           id: 'default-scene',
@@ -95,4 +106,39 @@ export const useAppStore = create<AppState>((set) => ({
   })),
   setActiveCard: (id) => set({ activeCardId: id, selectedElementId: null }),
   setSelectedElement: (id) => set({ selectedElementId: id }),
+  
+  loadProject: async (projectData) => {
+      const { db } = await import('../db/FrameFlowDB'); // Dynamic import to avoid circular deps if any
+      
+      const newCards = [...projectData.cards];
+      
+      // Rehydrate Assets (Regenerate Blob URLs)
+      for (const card of newCards) {
+          for (const el of card.elements) {
+              if (el.assetId) {
+                  try {
+                      const asset = await db.getAsset(el.assetId);
+                      if (asset) {
+                          el.content = URL.createObjectURL(asset.blob);
+                      } else {
+                          console.warn(`Asset ${el.assetId} not found in DB`);
+                          // Keep existing content URL if possible, or sets error state? 
+                          // Existing URL is likely dead blob:... so maybe set placeholder?
+                      }
+                  } catch (e) {
+                      console.error("Failed to load asset", e);
+                  }
+              }
+          }
+      }
+      
+      set({ 
+          cards: newCards,
+          activeCardId: newCards.length > 0 ? newCards[0].id : null,
+          selectedElementId: null
+      });
+  },
+
+  setIsRecording: (isRecording) => set({ isRecording }),
+  setRecordingStartTime: (time) => set({ recordingStartTime: time }),
 }))

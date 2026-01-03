@@ -24,6 +24,7 @@ export const Viewport: React.FC = () => {
         // Initialize Engine
         const engine = new CompositionEngine(canvasRef.current);
         engineRef.current = engine;
+        (window as any).frameflowEngine = engine; // Expose for UI (StudioPanel)
         
         // Initial Card Set (Crucial for first render)
         if (activeCard) {
