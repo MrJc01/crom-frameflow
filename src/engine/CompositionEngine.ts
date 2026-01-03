@@ -1,4 +1,6 @@
 import { CameraManager } from './CameraManager';
+import { useAppStore } from '../stores/useAppStore';
+
 import { db } from '../db/FrameFlowDB';
 import { ExportManager } from './ExportManager';
 // Duplicate of Store types to avoid circular dependencies if strict, 
@@ -111,6 +113,12 @@ export class CompositionEngine {
       }
   }
 
+  public seek(time: number) {
+      this.timeline.currentTime = time;
+      this.timeline.isPlaying = false; // Seeking implies pausing usually
+      console.log("[Engine] Seek to:", time);
+  }
+
   public setTimeUpdateCallback(cb: (time: number) => void) {
       this.onTimeUpdate = cb;
   }
@@ -145,20 +153,31 @@ export class CompositionEngine {
       const { width, height } = this.canvas;
       const ctx = this.context as CanvasRenderingContext2D;
       
+      const now = performance.now();
+      const settings = useAppStore.getState().settings;
+      const targetFps = settings.outputFps || 30;
+      const interval = 1000 / targetFps;
+      const delta = now - this.lastFrameTime;
+
+      // FPS Lock: Skip if not enough time passed
+      if (delta < interval) return;
+
+      // Adjust lastFrameTime to maintain cadence (subtracting variance)
+      this.lastFrameTime = now - (delta % interval);
+
       // 1. Advance Time if Playing
       if (this.timeline.isPlaying) {
-          const now = performance.now();
-          const delta = now - this.lastFrameTime; // ms
-          this.timeline.currentTime += delta;
-          
-         // console.log("[Engine] Time Advanced:", this.timeline.currentTime, "Delta:", delta);
+          // Advance by the simplified interval or actual delta? 
+          // Using 'interval' forces smooth steps, 'delta' tracks wall clock.
+          // Let's use interval to match the rendered frame step exactly for smoothness.
+          // However, if we dropped a lot of frames, we should catch up.
+          // For simple playback:
+          this.timeline.currentTime += delta; 
           
           if (this.onTimeUpdate) {
               this.onTimeUpdate(this.timeline.currentTime);
           }
       }
-      
-      this.lastFrameTime = performance.now();
       
       // ... rest of renderTimeline
 
@@ -201,35 +220,44 @@ export class CompositionEngine {
               const clipEnd = clip.start + clip.duration;
               if (this.timeline.currentTime >= clip.start && this.timeline.currentTime < clipEnd) {
                   // Visible!
-                  const asset = await this.resolveAsset(clip.assetId); // Need a way to get asset blob/url
-                  if (asset) {
-                      const seekTime = (this.timeline.currentTime - clip.start + clip.offset) / 1000;
-                      await this.drawVideoFrame(ctx, asset, seekTime, width, height);
+                  let assetUrl = this.assetUrlCache.get(clip.assetId);
+
+                  if (!assetUrl) {
+                      // Cache Miss: Trigger load but don't block render
+                      this.loadAsset(clip.assetId);
+                      continue; // Skip this frame until loaded
                   }
+
+                  // Cache Hit: Draw immediately
+                  const seekTime = (this.timeline.currentTime - clip.start + clip.offset) / 1000;
+                  await this.drawVideoFrame(ctx, assetUrl, seekTime, width, height);
               }
           }
       }
   }
-  
-  // Helper to resolve asset URL (In real app, we need access to FrameFlowDB or a cached map)
-  private async resolveAsset(_assetId: string): Promise<string | null> {
-    if (this.assetUrlCache.has(_assetId)) {
-        return this.assetUrlCache.get(_assetId)!;
-    }
 
-    try {
-        const asset = await db.getAsset(_assetId);
-        if (asset && asset.blob) {
-            const url = URL.createObjectURL(asset.blob);
-            this.assetUrlCache.set(_assetId, url);
-            return url;
-        }
-    } catch (e) {
-        console.warn("Failed to resolve asset", _assetId, e);
-    }
-    return null;
+  // Fire-and-forget loader (debouncing could be added if needed)
+  private loadingAssets = new Set<string>();
+  
+  private async loadAsset(assetId: string) {
+      if (this.loadingAssets.has(assetId)) return;
+      this.loadingAssets.add(assetId);
+      
+      try {
+          const asset = await db.getAsset(assetId);
+          if (asset && asset.blob) {
+              const url = URL.createObjectURL(asset.blob);
+              this.assetUrlCache.set(assetId, url);
+          }
+      } catch (e) {
+          console.warn("Failed to load asset", assetId, e);
+      } finally {
+          this.loadingAssets.delete(assetId);
+      }
   }
 
+  // Old resolveAsset removed.
+  
   private async drawVideoFrame(ctx: CanvasRenderingContext2D, url: string, time: number, w: number, h: number) {
        // Track usage
        this.videoLastUsed.set(url, performance.now());
@@ -627,7 +655,9 @@ export class CompositionEngine {
       
       const width = 1920;
       const height = 1080;
-      const fps = 30;
+      
+      const settings = useAppStore.getState().settings;
+      const fps = settings.outputFps || 30;
       const duration = this.timeline.tracks.reduce((max, track) => {
           const trackEnd = track.clips.reduce((end: number, clip: any) => Math.max(end, clip.start + clip.duration), 0);
           return Math.max(max, trackEnd);

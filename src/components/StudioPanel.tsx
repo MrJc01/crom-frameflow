@@ -1,8 +1,10 @@
+
 import React, { useEffect, useState } from 'react';
 import { Mic, Clapperboard, ChevronUp, ChevronDown, Plus, Scissors, Play, Pause, SkipBack, Download } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { db } from '../db/FrameFlowDB';
 import { PreviewMonitor } from './PreviewMonitor';
+import { TimelineRuler } from './TimelineRuler';
 
 export const StudioPanel: React.FC = () => {
     const isRecording = useAppStore(state => state.isRecording);
@@ -104,7 +106,7 @@ export const StudioPanel: React.FC = () => {
                         assetId: assetId,
                         name: fileName,
                         start: startTime,
-                        duration: 5000, // TODO: ideally get duration from blob metadata
+                        duration: recordingStartTime ? (Date.now() - recordingStartTime) : 5000,
                         offset: 0
                     });
 
@@ -133,11 +135,7 @@ export const StudioPanel: React.FC = () => {
         }
     };
 
-    const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-        const x = e.nativeEvent.offsetX; 
-        const timeInSec = x / timeline.zoom;
-        setTimelineTime(timeInSec * 1000);
-    };
+
 
     const handleDragStart = (e: React.DragEvent<HTMLDivElement>, asset: any) => {
         e.dataTransfer.setData('application/json', JSON.stringify({
@@ -236,9 +234,9 @@ export const StudioPanel: React.FC = () => {
     };
 
     return (
-        <div className={`fixed bottom-0 left-0 right-0 bg-[#0a0a0a] border-t border-white/10 flex flex-col transition-all duration-300 z-50 ${isExpanded ? 'h-96' : 'h-16'}`} >
+        <div className={`relative w-full bg-[#0a0a0a] border-t border-white/10 flex flex-col transition-all duration-300 z-50 ${isExpanded ? 'h-96' : 'h-16'}`} >
             
-            {/* Monitor PIP */}
+            {/* Monitor PIP (Restored) */}
             {isExpanded && <PreviewMonitor />}
 
             {/* Control Bar */}
@@ -365,20 +363,19 @@ export const StudioPanel: React.FC = () => {
                         {/* Content */}
                         <div className="relative min-w-full" style={{ width: `${totalWidth}px` }}>
                             {/* Ruler */}
-                            <div 
-                                className="h-6 border-b border-white/10 bg-[#111] absolute top-0 left-0 right-0 z-20 flex cursor-pointer hover:bg-white/5"
-                                onClick={handleSeek}
-                            >
-                                {Array.from({ length: Math.ceil(timeline.duration / 1000) }).map((_, i) => (
-                                    <div 
-                                        key={i} 
-                                        className="border-l border-white/20 h-full text-[10px] text-gray-500 pl-1 select-none"
-                                        style={{ width: `${timeline.zoom}px` }}
-                                    >
-                                        {i}s
-                                    </div>
-                                ))}
-                            </div>
+                            {/* Ruler (Memoized) */}
+                            <TimelineRuler 
+                                duration={timeline.duration} 
+                                zoom={timeline.zoom} 
+                                onSeek={(newTime) => {
+                                    const engine = (window as any).frameflowEngine;
+                                    if (engine && typeof engine.seek === 'function') {
+                                        engine.seek(newTime);
+                                    }
+                                    setTimelineTime(newTime);
+                                    setIsPlaying(false);
+                                }}
+                            />
 
                             {/* Tracks */}
                             <div className="pt-6">
@@ -390,6 +387,8 @@ export const StudioPanel: React.FC = () => {
                                         onDragLeave={handleTrackDragLeave}
                                         onDrop={(e) => handleTrackDrop(e, track.id)}
                                     >
+                                        {/* Timeline Ruler */}
+
                                         {/* Grid */}
                                         <div className="absolute inset-0 flex pointer-events-none opacity-10">
                                              {Array.from({ length: Math.ceil(timeline.duration / 1000) }).map((_, i) => (

@@ -1,4 +1,4 @@
-import { Layers, Upload, Play } from 'lucide-react';
+import { Layers, Upload, Play, Settings } from 'lucide-react';
 import { Viewport } from './components/Viewport';
 import { useAppStore, type Card } from './stores/useAppStore';
 import { EditorOverlay } from './components/EditorOverlay';
@@ -6,11 +6,13 @@ import { PropertyInspector } from './components/PropertyInspector';
 import { FloatingToolbar } from './components/FloatingToolbar';
 import { Sidebar } from './components/Sidebar';
 import { StudioPanel } from './components/StudioPanel';
+import { SettingsModal } from './components/SettingsModal';
 import { PresentationParser } from './engine/PresentationParser';
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { usePresentationSync } from './hooks/usePresentationSync';
 
 function App() {
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const addCards = useAppStore(state => state.addCards);
@@ -141,6 +143,13 @@ function App() {
                    <Upload className="w-3 h-3" />
                    Import
                  </button>
+                 
+                 <button 
+                   onClick={() => setIsSettingsOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <Settings className="w-3 h-3" />
+                   Settings
+                 </button>
              </div>
 
              {/* Present Button - Primary Action */}
@@ -156,7 +165,7 @@ function App() {
         </header>
 
         {/* Main Workspace */}
-        <div className="flex-1 flex overflow-hidden pb-16">
+        <div className="flex-1 flex overflow-hidden">
           {/* New Sidebar */}
           <Sidebar />
 
@@ -175,8 +184,11 @@ function App() {
           </aside>
         </div>
 
-        {/* Studio Panel (Fixed Overlay) */}
+        {/* Studio Panel (Relative Flex Item) */}
         <StudioPanel />
+        
+        {/* Settings Modal */}
+        <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
       </div>
     </div>
   );

@@ -76,6 +76,13 @@ interface AppState {
   // Optimization
   previewQuality: 'auto' | '1080p' | '720p' | '360p';
   setPreviewQuality: (quality: 'auto' | '1080p' | '720p' | '360p') => void;
+
+  // Global Settings
+  settings: {
+      outputFps: 30 | 60;
+      showDebugStats: boolean;
+  };
+  updateSettings: (settings: Partial<AppState['settings']>) => void;
 }
 
 export interface TimelineTrack {
@@ -114,6 +121,14 @@ export const useAppStore = create<AppState>((set) => ({
   
   previewQuality: 'auto',
   setPreviewQuality: (quality) => set({ previewQuality: quality }),
+
+  settings: {
+      outputFps: 30, // Default to 30 for stability
+      showDebugStats: false
+  },
+  updateSettings: (newSettings) => set((state) => ({
+      settings: { ...state.settings, ...newSettings }
+  })),
   
   cards: [
       {
