@@ -1,5 +1,6 @@
 import { CameraManager } from './CameraManager';
 import { db } from '../db/FrameFlowDB';
+import { ExportManager } from './ExportManager';
 // Duplicate of Store types to avoid circular dependencies if strict, 
 // or just re-define for Engine isolation.
 export interface SceneElement {
@@ -53,7 +54,14 @@ export class CompositionEngine {
   // Timeline State
   private renderMode: 'COMPOSITION' | 'TIMELINE' = 'COMPOSITION';
   private timeline: { tracks: any[], currentTime: number, isPlaying: boolean } = { tracks: [], currentTime: 0, isPlaying: false };
-  private onTimeUpdate: ((time: number) => void) | null = null;
+  private onTimeUpdate?: (time: number) => void;
+  public previewQuality: 'auto' | '1080p' | '720p' | '360p' = 'auto';
+
+  // Optimization: LRU Cache
+  private videoLastUsed = new Map<string, number>();
+  private lastCleanupTime = 0;
+  private readonly CLEANUP_INTERVAL = 5000; // Check every 5s
+  private readonly MAX_IDLE_TIME = 10000;   // Remove if idle > 10s
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -65,20 +73,67 @@ export class CompositionEngine {
   }
   
   public setRenderMode(mode: 'COMPOSITION' | 'TIMELINE') {
+      if (this.renderMode === mode) return;
       this.renderMode = mode;
+
+      if (mode === 'TIMELINE') {
+          // Suspend camera to save CPU
+          this.cameraManager.pauseAll();
+      } else {
+          // Resume camera for recording/composition
+          this.cameraManager.resumeAll();
+      }
   }
   
   public setTimelineState(state: { tracks: any[], currentTime: number, isPlaying: boolean }) {
       // Sync state from Store
-      this.timeline = state;
-      // If we seek, we might need to force video seek here or in render loop
+      // CRITICAL FIX: Do NOT overwrite currentTime if engine is playing, as Engine is the source of truth for time.
+      // Also, handle tracks update safely.
+      
+      this.timeline.tracks = state.tracks;
+      
+      // If Engine thinks it is playing, ignore Playback state from Store to avoid race conditions?
+      // Or accept it? Usually Store > Engine for user actions.
+      // But for Time, Engine > Store.
+      
+      if (!this.timeline.isPlaying) {
+          // Only accept external time set if we are paused (seeking)
+          this.timeline.currentTime = state.currentTime;
+      }
+      
+      // We accept isPlaying changes if they differ, but we rely on play()/pause() methods mostly.
+      // If store says paused but we are playing...
+      if (state.isPlaying !== this.timeline.isPlaying) {
+         // console.warn("[Engine] State mismatch for isPlaying. Engine:", this.timeline.isPlaying, "Store:", state.isPlaying);
+         // Let explicit play/pause methods handle this.
+         // Or sync?
+         // If we sync, we might stop playback inadvertently.
+      }
   }
 
   public setTimeUpdateCallback(cb: (time: number) => void) {
       this.onTimeUpdate = cb;
   }
 
+  public setPreviewQuality(quality: 'auto' | '1080p' | '720p' | '360p') {
+      this.previewQuality = quality;
+      // Force immediate resize if needed or let next frame handle it
+      if (quality === '1080p') this.resize(1920, 1080); // Reset
+  }
+
+  public play() {
+      console.log("[Engine] Play called. Current Mode:", this.renderMode);
+      this.timeline.isPlaying = true;
+      this.lastFrameTime = performance.now(); // Reset delta to avoid jumps
+  }
+
+  public pause() {
+      console.log("[Engine] Pause called.");
+      this.timeline.isPlaying = false;
+  }
+
   private async render() {
+    // console.log("[Engine] Render loop tick"); // Too noisy
     if (this.renderMode === 'TIMELINE') {
         await this.renderTimeline();
     } else {
@@ -96,14 +151,43 @@ export class CompositionEngine {
           const delta = now - this.lastFrameTime; // ms
           this.timeline.currentTime += delta;
           
+         // console.log("[Engine] Time Advanced:", this.timeline.currentTime, "Delta:", delta);
+          
           if (this.onTimeUpdate) {
               this.onTimeUpdate(this.timeline.currentTime);
           }
       }
       
       this.lastFrameTime = performance.now();
+      
+      // ... rest of renderTimeline
 
-      // 2. Clear
+      // 2. Clear & Resize
+      // Resolution Scaling
+      let scale = 1;
+      if (this.previewQuality === '360p') scale = 0.25; // 1080p -> 270p (rough)
+      else if (this.previewQuality === '720p') scale = 0.67; 
+      else if (this.previewQuality === '1080p') scale = 1;
+      else { 
+          // Auto: Check FPS
+          if (this.fps < 25) scale = 0.5;
+          else scale = 1;
+      }
+
+      // We only resize the internal canvas buffering context if we had one.
+      // But here we are drawing to THIS.CANVAS.
+      // Changing this.canvas.width/height CLEARS the canvas automatically.
+      
+      const targetW = Math.floor(1920 * scale);
+      const targetH = Math.floor(1080 * scale);
+      
+      // Only resize if significantly different to avoid thrashing
+      if (Math.abs(width - targetW) > 10 && this.renderMode === 'TIMELINE') {
+           this.resize(targetW, targetH);
+           // Update local vars after resize
+           return; // Return frame to let resize take effect next tick (avoid flicker)
+      }
+
       ctx.fillStyle = '#111';
       ctx.fillRect(0, 0, width, height);
 
@@ -147,12 +231,16 @@ export class CompositionEngine {
   }
 
   private async drawVideoFrame(ctx: CanvasRenderingContext2D, url: string, time: number, w: number, h: number) {
+       // Track usage
+       this.videoLastUsed.set(url, performance.now());
+
        let vid = this.videoCache.get(url);
        if (!vid) {
            vid = document.createElement('video');
            vid.src = url;
            vid.muted = true;
-           vid.playsInline = true;
+//           vid.playsInline = true;
+           (vid as any).playsInline = true; // TS fix
            this.videoCache.set(url, vid);
        }
        
@@ -422,6 +510,20 @@ export class CompositionEngine {
     }
     this.cameraManager.stopAll();
     
+    // Memory Cleanup: Revoke all object URLs
+    this.assetUrlCache.forEach((url) => {
+        URL.revokeObjectURL(url);
+    });
+    this.assetUrlCache.clear();
+    
+    // Clear video cache (pause them)
+    this.videoCache.forEach((vid) => {
+        vid.pause();
+        vid.src = "";
+        vid.load();
+    });
+    this.videoCache.clear();
+
     if (this.context instanceof CanvasRenderingContext2D || this.context instanceof OffscreenCanvasRenderingContext2D) {
        this.context.fillStyle = '#000';
        this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -480,11 +582,93 @@ export class CompositionEngine {
       return this.canvas.captureStream(60);
   }
 
+  private garbageCollectResources() {
+      const now = performance.now();
+      if (now - this.lastCleanupTime < this.CLEANUP_INTERVAL) return;
+      this.lastCleanupTime = now;
+
+      for (const [url, lastTime] of this.videoLastUsed.entries()) {
+          // If unused for MAX_IDLE_TIME, remove it
+          if (now - lastTime > this.MAX_IDLE_TIME) {
+              const vid = this.videoCache.get(url);
+              if (vid) {
+                  console.debug("[Engine] GC: Removing idle video element", url);
+                  vid.pause();
+                  vid.src = "";
+                  vid.load();
+                  this.videoCache.delete(url);
+              }
+              this.videoLastUsed.delete(url);
+          }
+      }
+  }
+
   private loop = async () => {
     if (!this.isRunning) return;
+    
+    // Performance: Frame Skipping
+    // const now = performance.now();
+    // const delta = now - this.lastFrameTime;
+
+    this.garbageCollectResources();
+
     await this.render();
+    
     this.rafId = requestAnimationFrame(this.loop);
   };
+
+  /**
+   * Export Process (WebCodecs)
+   */
+  async exportVideo(onProgress?: (percent: number) => void): Promise<void> {
+      console.log("Starting Export...");
+      const wasRunning = this.isRunning;
+      this.stop(); // Stop loop/camera
+      
+      const width = 1920;
+      const height = 1080;
+      const fps = 30;
+      const duration = this.timeline.tracks.reduce((max, track) => {
+          const trackEnd = track.clips.reduce((end: number, clip: any) => Math.max(end, clip.start + clip.duration), 0);
+          return Math.max(max, trackEnd);
+      }, 0); // ms
+
+      if (duration === 0) {
+          alert("Timeline is empty!");
+          if (wasRunning) this.start();
+          return;
+      }
+      
+      // Force 1080p for export
+      this.canvas.width = width;
+      this.canvas.height = height;
+      this.previewQuality = '1080p'; // Force full quality
+
+      const exportManager = new ExportManager(width, height, fps);
+      await exportManager.initialize();
+
+      const totalFrames = Math.ceil((duration / 1000) * fps);
+      const frameDuration = 1000 / fps; // ms
+
+      for (let i = 0; i < totalFrames; i++) {
+           const time = i * frameDuration;
+           this.timeline.currentTime = time;
+           
+           // Force render at this time
+           // Note: renderTimeline uses this.timeline.currentTime
+           await this.renderTimeline();
+           
+           // Encode
+           await exportManager.encodeFrame(this.canvas, time);
+           
+           if (onProgress) onProgress(Math.floor((i / totalFrames) * 100));
+      }
+
+      await exportManager.finish();
+      console.log("Export Finished!");
+      
+      if (wasRunning) this.start();
+  }
 
   // Helper to draw image cover (like CSS object-fit: cover)
   private drawImageProp(ctx: CanvasRenderingContext2D, img: CanvasImageSource, x: number, y: number, w: number, h: number, offsetX: number = 0.5, offsetY: number = 0.5) {

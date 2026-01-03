@@ -128,4 +128,17 @@ export class CameraManager {
    getSource(elementId: string): VideoSource | undefined {
        return this.sources.get(elementId);
    }
- }
+
+  // --- Optimization: suspend/resume tracks ---
+  pauseAll() {
+      this.activeStreams.forEach(stream => {
+          stream.getTracks().forEach(t => t.enabled = false);
+      });
+  }
+
+  resumeAll() {
+      this.activeStreams.forEach(stream => {
+          stream.getTracks().forEach(t => t.enabled = true);
+      });
+  }
+}

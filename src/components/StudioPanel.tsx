@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Square, Mic, Clapperboard, ChevronUp, ChevronDown, Plus, Scissors } from 'lucide-react';
+import { Mic, Clapperboard, ChevronUp, ChevronDown, Plus, Scissors, Play, Pause, SkipBack, Download } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { db } from '../db/FrameFlowDB';
 import { PreviewMonitor } from './PreviewMonitor';
@@ -180,84 +180,159 @@ export const StudioPanel: React.FC = () => {
             console.error("Failed to drop clip", err);
         }
     };
+        
+    const formatTime = (ms: number) => {
+        const seconds = Math.floor(ms / 1000);
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    };
+
+    // Sync Quality to Engine
+    const previewQuality = useAppStore(state => state.previewQuality);
+    const setPreviewQuality = useAppStore(state => state.setPreviewQuality);
+    
+    useEffect(() => {
+        const engine = (window as any).frameflowEngine;
+        if (engine && typeof engine.setPreviewQuality === 'function') {
+            engine.setPreviewQuality(previewQuality);
+        }
+    }, [previewQuality]);
+
+    const togglePlayback = () => {
+        const engine = (window as any).frameflowEngine;
+        if (engine) {
+            if (timeline.isPlaying) {
+                engine.pause();
+            } else {
+                engine.play();
+            }
+        }
+        setIsPlaying(!timeline.isPlaying);
+    };
 
     // Calculate Grid
     const totalWidth = (timeline.duration / 1000) * timeline.zoom;
 
+    const [isExporting, setIsExporting] = useState(false);
+    const [exportProgress, setExportProgress] = useState(0);
+
+    const handleExport = async () => {
+        const engine = (window as any).frameflowEngine;
+        if (!engine) return;
+
+        if (confirm("Start Frame-Perfect MP4 Export? This might take a while.")) {
+            setIsExporting(true);
+            setExportProgress(0);
+            try {
+                await engine.exportVideo((p: number) => setExportProgress(p));
+            } catch (e) {
+                console.error("Export Failed", e);
+                alert("Export Failed. See console.");
+            } finally {
+                setIsExporting(false);
+            }
+        }
+    };
+
     return (
-        <div className={`fixed bottom-0 left-0 right-0 bg-[#0a0a0a] border-t border-white/10 flex flex-col transition-all duration-300 z-50 ${isExpanded ? 'h-96' : 'h-16'}`}>
+        <div className={`fixed bottom-0 left-0 right-0 bg-[#0a0a0a] border-t border-white/10 flex flex-col transition-all duration-300 z-50 ${isExpanded ? 'h-96' : 'h-16'}`} >
             
             {/* Monitor PIP */}
             {isExpanded && <PreviewMonitor />}
 
             {/* Control Bar */}
-            <div className="h-16 flex items-center justify-between px-6 shrink-0 bg-[#0a0a0a] z-20 relative border-b border-white/5">
-                {/* ... (Left: Status) ... */}
-                <div className="flex items-center gap-4 w-1/3">
-                    <button 
-                        onClick={() => setIsExpanded(!isExpanded)}
-                        className="p-1 hover:bg-white/10 rounded text-gray-400"
-                    >
-                        {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
-                    </button>
-                    {!isExpanded ? (
-                        <div className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-full ${isRecording ? 'bg-red-500 animate-pulse' : 'bg-gray-600'}`}></div>
-                            <span className="font-mono text-xl font-bold tracking-widest text-white/90">{elapsed}</span>
-                        </div>
-                    ) : (
-                        <div className="flex items-center gap-2">
-                             <button onClick={() => setIsPlaying(!timeline.isPlaying)} className="text-white hover:text-green-400">
-                                 {timeline.isPlaying ? <Square className="w-4 h-4 fill-current" /> : <div className="w-0 h-0 border-l-[12px] border-l-white border-y-[6px] border-y-transparent ml-1"></div>}
-                             </button>
-                             <span className="font-mono text-sm text-gray-400">
-                                 {new Date(timeline.currentTime).toISOString().substr(14, 5)}
-                             </span>
-                        </div>
-                    )}
-                    {isRecording && <span className="text-[10px] text-red-500 uppercase font-bold tracking-wider">REC</span>}
+            <div className="h-16 flex items-center px-6 gap-4 bg-[#0a0a0a] relative z-20">
+                
+                {/* Expand Toggle */}
+                <button 
+                    onClick={() => setIsExpanded(!isExpanded)}
+                    className="p-2 hover:bg-white/10 rounded-lg transition-colors"
+                >
+                    {isExpanded ? <ChevronDown className="w-5 h-5 text-white/70" /> : <ChevronUp className="w-5 h-5 text-white/70" />}
+                </button>
+
+                {/* Record Button & Status */}
+                <button 
+                    onClick={handleToggleRecord}
+                    className={`
+                        w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300
+                        ${isRecording ? 'bg-red-500/20 scale-110' : 'hover:bg-red-500/20 group'}
+                    `}
+                >
+                    <div className={`
+                        rounded-full transition-all duration-300
+                        ${isRecording ? 'w-4 h-4 bg-red-500 rounded-sm' : 'w-6 h-6 bg-red-500 group-hover:scale-90'}
+                    `} />
+                </button>
+
+                <div className="flex flex-col">
+                    <span className={`text-sm font-mono font-medium ${isRecording ? 'text-red-500' : 'text-white'}`}>
+                        {isRecording ? elapsed : (isExpanded ? formatTime(timeline.currentTime) : "00:00")}
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wider text-white/50">
+                        {isRecording ? "Recording" : (isExpanded ? "Timeline" : "Ready")}
+                    </span>
                 </div>
 
-                {/* Center */}
-                <div className="flex items-center justify-center gap-4 w-1/3">
-                    {!isExpanded ? (
-                    <button 
-                        onClick={handleToggleRecord}
-                        className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
-                            isRecording 
-                            ? 'bg-white/10 hover:bg-white/20' 
-                            : 'bg-red-600 hover:bg-red-500 hover:scale-110 shadow-[0_0_15px_rgba(220,38,38,0.5)]'
-                        }`}
-                    >
-                        {isRecording ? (
-                            <Square className="w-5 h-5 fill-white text-white" />
-                        ) : (
-                            <div className="w-4 h-4 rounded-sm bg-white" style={{borderRadius: '2px'}}></div>
-                        )}
-                    </button>
-                    ) : (
-                         <span className="text-gray-500 text-xs tracking-widest uppercase">Timeline Editor</span>
-                    )}
-                </div>
+                <div className="h-8 w-px bg-white/10 mx-2" />
 
-                {/* Right: Options */}
-                <div className="flex items-center justify-end gap-3 w-1/3">
-                    <div className="flex bg-white/5 rounded-lg p-1 relative">
-                        <button className="p-2 hover:bg-white/5 rounded text-gray-400 hover:text-white" title="Mic Settings">
-                            <Mic className="w-4 h-4" />
-                        </button>
+                {/* Timeline Toolbar (Only when expanded) */}
+                {isExpanded && (
+                    <div className="flex items-center gap-2">
                         <button 
-                            className={`p-2 rounded text-gray-400 hover:text-white transition-colors ${showAssetBin ? 'bg-white/20 text-white' : 'hover:bg-white/5'}`}
-                            onClick={() => {
-                                setShowAssetBin(!showAssetBin);
-                                if (!isExpanded) setIsExpanded(true); // Auto expand if opening bin
-                            }}
-                            title="Asset Library"
+                             onClick={() => setShowAssetBin(!showAssetBin)}
+                             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${showAssetBin ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 hover:bg-white/10 text-white/70'}`}
                         >
                             <Clapperboard className="w-4 h-4" />
+                            Assets
+                        </button>
+                        
+                        <div className="h-6 w-px bg-white/10 mx-2" />
+                        
+                        {/* Playback Controls */}
+                        <div className="flex items-center gap-2">
+                            <button className="p-2 hover:bg-white/10 rounded-full text-white/70">
+                                <SkipBack className="w-4 h-4" onClick={() => setTimelineTime(0)} />
+                            </button>
+                            <button 
+                                className="p-2 bg-white text-black rounded-full hover:bg-white/90"
+                                onClick={togglePlayback}
+                            >
+                                {timeline.isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                            </button>
+                        </div>
+
+                         <div className="h-6 w-px bg-white/10 mx-2" />
+
+                        {/* Quality Dropdown - Optimization */}
+                         <div className="relative group">
+                            <select 
+                                value={previewQuality}
+                                onChange={(e) => setPreviewQuality(e.target.value as any)}
+                                className="appearance-none bg-black border border-white/20 text-xs text-white/70 pl-2 pr-6 py-1 rounded cursor-pointer hover:border-white/40 focus:outline-none focus:border-blue-500"
+                            >
+                                <option value="auto">Auto Quality</option>
+                                <option value="1080p">1080p (High)</option>
+                                <option value="720p">720p (Med)</option>
+                                <option value="360p">360p (Fast)</option>
+                            </select>
+                            <ChevronDown className="w-3 h-3 text-white/50 absolute right-2 top-1.5 pointer-events-none" />
+                        </div>
+                        
+                        <div className="h-6 w-px bg-white/10 mx-2" />
+                        
+                        {/* Export Button */}
+                        <button 
+                            onClick={handleExport}
+                            disabled={isExporting}
+                            className="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1 rounded font-medium disabled:opacity-50 flex items-center gap-2"
+                        >
+                            <Download className="w-3 h-3" />
+                            {isExporting ? `Exporting ${Math.round(exportProgress)}%` : 'Export MP4'}
                         </button>
                     </div>
-                </div>
+                )}
             </div>
 
             {/* Main Area: Split Timeline and Asset Bin */}

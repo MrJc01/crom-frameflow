@@ -72,6 +72,10 @@ interface AppState {
   setIsPlaying: (playing: boolean) => void;
   addTrack: (type: 'video' | 'audio') => void;
   addClip: (trackId: string, clip: TimelineClip) => void;
+
+  // Optimization
+  previewQuality: 'auto' | '1080p' | '720p' | '360p';
+  setPreviewQuality: (quality: 'auto' | '1080p' | '720p' | '360p') => void;
 }
 
 export interface TimelineTrack {
@@ -107,6 +111,9 @@ export const useAppStore = create<AppState>((set) => ({
     isPlaying: false,
     zoom: 100, // 100px per second default
   },
+  
+  previewQuality: 'auto',
+  setPreviewQuality: (quality) => set({ previewQuality: quality }),
   
   cards: [
       {
