@@ -252,6 +252,28 @@ export const PropertyInspector: React.FC = () => {
                 </button>
             </div>
             
+             {/* Clone Action */}
+             <div className="border-t border-white/10 pt-4">
+                 <button 
+                    onClick={() => {
+                        const newId = `${selectedElement.type}-${Date.now()}`;
+                        const newElement: SceneElement = {
+                            ...selectedElement,
+                            id: newId,
+                            x: selectedElement.x + 20,
+                            y: selectedElement.y + 20
+                        };
+                        const newElements = [...activeCard.elements, newElement];
+                        updateCardElements(activeCard.id, newElements);
+                        // Store will auto-update? 
+                        // We might want to select it too, but store doesn't have handy 'addAndSelect' yet.
+                    }}
+                    className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded transition-colors"
+                >
+                    <LayersIcon className="w-4 h-4" /> Duplicate Element
+                </button>
+             </div>
+            
              {/* Camera Properties */}
              {selectedElement.type === 'camera' && (
                 <CameraInspector 

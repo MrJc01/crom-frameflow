@@ -174,6 +174,45 @@ export class CompositionEngine {
              // Infinite: Just viewport offset
              sceneTx = -(this.activeCard.viewportX || 0);
              sceneTy = -(this.activeCard.viewportY || 0);
+             
+             // Draw Infinite Grid (Optional) or Void
+             // ...
+
+             // Draw "Broadcast Guide" (The active output area relative to screen 0,0)
+             // In Infinite Mode, we assume the camera is "looking at" the canvas.
+             // The output is what falls within [0,0, width, height] of the CANVAS (if canvas is 1080p)
+             // OR relative to the viewport settings.
+             
+             // Let's assume the "Output Frame" matches the Card Resolution (e.g., 1920x1080)
+             // and is anchored at (0,0) of the *Canvas/Screen*, effectively making the window a "portal".
+             // As you pan, the world slides past this portal.
+             
+             const outW = this.activeCard.width || 1920;
+             const outH = this.activeCard.height || 1080;
+             
+             // Draw Dark Overlay outside the active area (Letterboxing/Windowing effect)
+             ctx.save();
+             ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+             
+             // Top
+             if (height > outH) ctx.fillRect(0, outH, width, height - outH);
+             // Right
+             if (width > outW) ctx.fillRect(outW, 0, width - outW, height);
+             
+             // Note: If canvas < output, we just don't see the overlay.
+             
+             // Draw Guide Border
+             ctx.strokeStyle = '#FF0000';
+             ctx.lineWidth = 2;
+             ctx.setLineDash([10, 5]);
+             ctx.strokeRect(0, 0, outW, outH);
+             
+             // Label
+             ctx.fillStyle = '#FF0000';
+             ctx.font = '12px sans-serif';
+             ctx.fillText("LIVE OUTPUT AREA", 10, 20);
+             
+             ctx.restore();
         }
 
         ctx.save(); // Start Scene Transform Block
