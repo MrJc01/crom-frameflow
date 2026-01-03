@@ -48,15 +48,35 @@ export const StudioPanel: React.FC = () => {
         }
     }, [timeline, isExpanded]);
 
+    // Playhead Ref for direct DOM manipulation (Performance)
+    const playheadRef = React.useRef<HTMLDivElement>(null);
+    const lastTimeRef = React.useRef(timeline.currentTime);
+
     // Listen for Engine time updates
     useEffect(() => {
         const engine = (window as any).frameflowEngine;
         if (engine) {
             engine.setTimeUpdateCallback((time: number) => {
-                setTimelineTime(time);
+                // PERFORMANCE CRITICAL: Direct DOM update to avoid React Re-render loop
+                if (playheadRef.current) {
+                    const pos = (time / 1000) * timeline.zoom;
+                    playheadRef.current.style.left = `${pos}px`;
+                }
+                lastTimeRef.current = time;
             });
         }
-    }, []);
+    }, [timeline.zoom]); // Re-bind if zoom changes to ensure calculation is correct
+
+    // Sync store only on pause/stop to keep it "eventually consistent"
+    useEffect(() => {
+        if (!timeline.isPlaying && Math.abs(timeline.currentTime - lastTimeRef.current) > 100) {
+            // If we paused, sync the visual playhead to the store time
+             if (playheadRef.current) {
+                const pos = (timeline.currentTime / 1000) * timeline.zoom;
+                playheadRef.current.style.left = `${pos}px`;
+            }
+        }
+    }, [timeline.currentTime, timeline.isPlaying, timeline.zoom]);
 
     // Timer Logic
     useEffect(() => {
@@ -419,6 +439,7 @@ export const StudioPanel: React.FC = () => {
                             
                             {/* Playhead */}
                              <div 
+                                 ref={playheadRef}
                                  className="absolute top-0 bottom-0 w-[1px] bg-red-500 z-40 pointer-events-none"
                                  style={{ left: `${(timeline.currentTime / 1000) * timeline.zoom}px` }}
                             >

@@ -274,17 +274,33 @@ export class CompositionEngine {
        
        // Hybrid Playback/Seek Logic
        if (this.timeline.isPlaying) {
-           // If we are "playing", try to let the video play naturally to ensure smooth stream
+           // 1. Ensure playing
            if (vid.paused) vid.play().catch(() => {});
            
-           // Sync check: If drift is too large, snap it.
-           const drift = vid.currentTime - time;
-           if (Math.abs(drift) > 0.2) {
+           // 2. Smart Sync (Drift Correction)
+           // Calculate drift: Difference between Video Time and Engine Time
+           const drift = vid.currentTime - time; // Positive = Video is ahead, Negative = Video is behind
+           
+           if (Math.abs(drift) > 0.5) {
+               // Hard Resync if way off (e.g. loop or jump)
                vid.currentTime = time;
+               vid.playbackRate = 1.0;
+           } else if (Math.abs(drift) > 0.05) {
+               // Soft Resync: Adjust speed to catch up or slow down
+               // P-Controller: Error * Gain
+               // If behind (drift < 0), we need speed > 1
+               // If ahead (drift > 0), we need speed < 1
+               const correction = 1.0 - (drift * 0.5); 
+               // Clamp playbackRate to sane limits [0.5, 2.0]
+               vid.playbackRate = Math.max(0.5, Math.min(2.0, correction));
+           } else {
+               // In sync
+               if (vid.playbackRate !== 1.0) vid.playbackRate = 1.0;
            }
        } else {
            // Paused: Precise seeking
            vid.pause();
+           // Only seek if significantly different to prevent jitter
            if (Math.abs(vid.currentTime - time) > 0.05) {
                vid.currentTime = time;
            }
@@ -460,11 +476,10 @@ export class CompositionEngine {
     ctx.fillText(`FPS: ${this.fps}`, 20, 40);
   }
 
+  private cleanupIntervalId: any = null;
+
   async start(): Promise<void> {
     if (this.isRunning) return;
-    
-    // Check if we have an active card with camera elements and start them?
-    // Usually setCard is called before start or right after.
     
     this.isRunning = true;
     
@@ -475,8 +490,27 @@ export class CompositionEngine {
             .catch(err => console.error("Failed to start screen share", err));
     });
 
+    // Optimization: Run GC every 5 seconds independent of frame loop
+    this.cleanupIntervalId = setInterval(() => {
+        this.garbageCollectResources();
+    }, this.CLEANUP_INTERVAL);
+
     this.loop();
   }
+
+  // ... (setCard omitted for brevity, ensure it's not replaced if not needed, but wait I need to be careful with replace range)
+  // Actually, I should edit start and stop separately or carefully.
+  // Let's use multi_replace or careful replace. 
+  // I will just replace the strict methods needed.
+  
+  // Let's replace 'start' method entirely.
+  
+  // And 'stop' method.
+  
+  // And 'loop' method.
+  
+  // I will do this in the next tool call. This text block is just thinking.
+  
 
   setCard(card: EngineCard | null) {
       if (this.activeCard === card) return; // No change
@@ -536,6 +570,11 @@ export class CompositionEngine {
       cancelAnimationFrame(this.rafId);
       this.rafId = null;
     }
+    if (this.cleanupIntervalId) {
+        clearInterval(this.cleanupIntervalId);
+        this.cleanupIntervalId = null;
+    }
+
     this.cameraManager.stopAll();
     
     // Memory Cleanup: Revoke all object URLs
@@ -557,6 +596,16 @@ export class CompositionEngine {
        this.context.fillRect(0, 0, this.canvas.width, this.canvas.height);
     }
   }
+
+  // ... (Rec api) ...
+
+  // To avoid breaking the file, I will just jump to loop.
+  // Wait, I can't jump lines in replace_file_content unless I include everything between.
+  // I will use multi_replace for this next time or just replace loop separately.
+  
+  // Actually, I am replacing a big block so I must include everything or use multi.
+  // I will just replace stop() first.
+
 
   // --- Recording API ---
   // mediaRecorder is defined at the top
@@ -610,9 +659,34 @@ export class CompositionEngine {
       return this.canvas.captureStream(60);
   }
 
+  private preloadUpcomingAssets(lookaheadMs: number) {
+      const lookaheadTime = this.timeline.currentTime + lookaheadMs;
+      
+      for (const track of this.timeline.tracks) {
+          if (track.type !== 'video') continue;
+          
+          for (const clip of track.clips) {
+              // Check if clip STARTS within [now, now + lookahead]
+              // OR if clip is currently playing (handling gapless boundary)
+              const clipStart = clip.start;
+              const clipEnd = clip.start + clip.duration;
+              
+              const isUpcoming = (clipStart > this.timeline.currentTime && clipStart < lookaheadTime);
+              const isCurrent = (this.timeline.currentTime >= clipStart && this.timeline.currentTime < clipEnd);
+
+              if (isUpcoming || isCurrent) {
+                  if (!this.assetUrlCache.has(clip.assetId)) {
+                      this.loadAsset(clip.assetId);
+                  }
+              }
+          }
+      }
+  }
+
   private garbageCollectResources() {
       const now = performance.now();
-      if (now - this.lastCleanupTime < this.CLEANUP_INTERVAL) return;
+      // Interval check removed since we call it via setInterval
+      // if (now - this.lastCleanupTime < this.CLEANUP_INTERVAL) return;
       this.lastCleanupTime = now;
 
       for (const [url, lastTime] of this.videoLastUsed.entries()) {
@@ -638,7 +712,13 @@ export class CompositionEngine {
     // const now = performance.now();
     // const delta = now - this.lastFrameTime;
 
-    this.garbageCollectResources();
+    // GC is now interval-based
+    // this.garbageCollectResources();
+
+    // 1. Preload Next Assets (Lookahead 2s)
+    if (this.renderMode === 'TIMELINE' && this.timeline.isPlaying) {
+        this.preloadUpcomingAssets(2000);
+    }
 
     await this.render();
     
