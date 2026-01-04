@@ -17,6 +17,7 @@ export const EditorOverlay: React.FC = () => {
     const [isDragging, setIsDragging] = useState(false);
     const [dragStart, setDragStart] = useState<{x: number, y: number} | null>(null);
     const [initialElementState, setInitialElementState] = useState<SceneElement | null>(null);
+    const [tempElement, setTempElement] = useState<SceneElement | null>(null);
 
     if (!activeCard) return null;
 
@@ -99,6 +100,9 @@ export const EditorOverlay: React.FC = () => {
         setIsDragging(true);
         const { x, y } = getSceneCursor(e.clientX, e.clientY);
         setDragStart({ x, y });
+        
+        const el = activeCard.elements.find(el => el.id === elementId);
+        if (el) setInitialElementState({...el});
     };
 
     const handleResizeStart = (e: React.MouseEvent, element: SceneElement, handle: string) => {
@@ -151,64 +155,42 @@ export const EditorOverlay: React.FC = () => {
         const deltaX = currentScenePos.x - dragStart.x;
         const deltaY = currentScenePos.y - dragStart.y;
 
-        if (!selectedElementId) return;
+        if (!selectedElementId || !initialElementState) return;
 
-        const newElements = activeCard.elements.map(el => {
-            if (el.id === selectedElementId) {
-                if (interactionMode === 'move') {
-                    return {
-                        ...el,
-                        x: el.x + deltaX,
-                        y: el.y + deltaY
-                    };
-                } else if (interactionMode === 'resize' && initialElementState) {
-                    const s = initialElementState;
-                    let newEl = { ...el };
+        // Use INITIAL state + Total Delta
+        const s = initialElementState;
+        let newEl = { ...s };
 
-                    switch (resizeHandle) {
-                        case 'br': // Bottom Right
-                             newEl.width = Math.max(10, s.width + deltaX);
-                             newEl.height = Math.max(10, s.height + deltaY);
-                             break;
-                        case 'bl': // Bottom Left
-                             newEl.x = s.x + deltaX; // Wait, s.x is start pos. deltaX is accumulative?
-                             // dragging: current - start = delta.
-                             // formula: newX = oldX + delta. Correct.
-                             newEl.width = Math.max(10, s.width - deltaX);
-                             newEl.height = Math.max(10, s.height + deltaY);
-                             break;
-                        case 'tr': // Top Right
-                             newEl.y = s.y + deltaY;
-                             newEl.width = Math.max(10, s.width + deltaX);
-                             newEl.height = Math.max(10, s.height - deltaY);
-                             break;
-                        case 'tl': // Top Left
-                             newEl.x = s.x + deltaX;
-                             newEl.y = s.y + deltaY;
-                             newEl.width = Math.max(10, s.width - deltaX);
-                             newEl.height = Math.max(10, s.height - deltaY);
-                             break;
-                    }
-                    return newEl;
-                }
-            }
-            return el;
-        });
-
-        updateCardElements(activeCard.id, newElements);
-        
         if (interactionMode === 'move') {
-             // For move, we want to accumulate or reset?
-             // If we use delta from *last frame*, we reset dragStart.
-             // Here delta is (current - last).
-             setDragStart({ x: currentScenePos.x, y: currentScenePos.y });
+            newEl.x = s.x + deltaX;
+            newEl.y = s.y + deltaY;
+        } else if (interactionMode === 'resize') {
+            switch (resizeHandle) {
+                case 'br': 
+                     newEl.width = Math.max(10, s.width + deltaX);
+                     newEl.height = Math.max(10, s.height + deltaY);
+                     break;
+                case 'bl': 
+                     newEl.x = s.x + deltaX; 
+                     newEl.width = Math.max(10, s.width - deltaX);
+                     newEl.height = Math.max(10, s.height + deltaY);
+                     break;
+                case 'tr': 
+                     newEl.y = s.y + deltaY;
+                     newEl.width = Math.max(10, s.width + deltaX);
+                     newEl.height = Math.max(10, s.height - deltaY);
+                     break;
+                case 'tl': 
+                     newEl.x = s.x + deltaX;
+                     newEl.y = s.y + deltaY;
+                     newEl.width = Math.max(10, s.width - deltaX);
+                     newEl.height = Math.max(10, s.height - deltaY);
+                     break;
+            }
         }
-        // For resize, we use 'initialElementState', so we want delta from *start of drag*.
-        // But here I'm resetting dragStart? 
-        // Make up your mind! 
-        // Code above: used `s.width + deltaX`. `s` is initial. So deltaX must be total delta.
-        // If I reset dragStart, deltaX will be small step.
-        // FIX: For resize, do NOT reset dragStart.
+        
+        // UPDATE LOCAL STATE ONLY (No Store Update)
+        setTempElement(newEl);
     };
 
     const handleMouseUp = () => {
@@ -216,16 +198,25 @@ export const EditorOverlay: React.FC = () => {
         setDragStart(null);
         setInteractionMode('move');
         setResizeHandle(null);
+        
+        // Commit changes to Store
+        if (tempElement && activeCard) {
+            const newElements = activeCard.elements.map(el => 
+                el.id === tempElement.id ? tempElement : el
+            );
+            updateCardElements(activeCard.id, newElements);
+        }
+        
         setInitialElementState(null);
+        setTempElement(null);
     };
 
     const renderContent = () => (
         <>
         {[...activeCard.elements].sort((a, b) => a.zIndex - b.zIndex).map(el => {
-                 // Scene Coordinates are pure now (el.x, el.y).
-                 // We apply the transform to the PARENT container, not the elements.
-                 // So we just render raw x, y here!
-                 
+                 // Use temp state if dragging this element
+                 const displayEl = (tempElement && tempElement.id === el.id) ? tempElement : el;
+
                  return (
                     <div
                         key={el.id}
@@ -235,35 +226,30 @@ export const EditorOverlay: React.FC = () => {
                             ${selectedElementId === el.id ? 'border-indigo-500 z-50' : 'border-transparent hover:border-white/50'}
                         `}
                         style={{
-                            left: el.x,
-                            top: el.y,
-                            width: el.width,
-                            height: el.height,
-                            transform: `rotate(${el.rotation}deg)`
+                            left: displayEl.x,
+                            top: displayEl.y,
+                            width: displayEl.width,
+                            height: displayEl.height,
+                            transform: `rotate(${displayEl.rotation}deg)`
                         }}
                     >
                         {/* Resize Handles (Only for selected) */}
                         {selectedElementId === el.id && (
                         <>
-                            {/* ... handles ... */} 
-                            {/* We can keep handles size constant in pixels by inverse scaling? 
-                                Or let them scale (might get tiny).
-                                For now let them scale. 
-                            */}
                             <div 
-                                onMouseDown={(e) => handleResizeStart(e, el, 'tl')}
+                                onMouseDown={(e) => handleResizeStart(e, displayEl, 'tl')}
                                 className="absolute -top-2 -left-2 w-4 h-4 bg-white border border-indigo-500 rounded-full cursor-nw-resize" 
                             />
                             <div 
-                                onMouseDown={(e) => handleResizeStart(e, el, 'tr')}
+                                onMouseDown={(e) => handleResizeStart(e, displayEl, 'tr')}
                                 className="absolute -top-2 -right-2 w-4 h-4 bg-white border border-indigo-500 rounded-full cursor-ne-resize" 
                             />
                             <div 
-                                onMouseDown={(e) => handleResizeStart(e, el, 'bl')}
+                                onMouseDown={(e) => handleResizeStart(e, displayEl, 'bl')}
                                 className="absolute -bottom-2 -left-2 w-4 h-4 bg-white border border-indigo-500 rounded-full cursor-sw-resize" 
                             />
                             <div 
-                                onMouseDown={(e) => handleResizeStart(e, el, 'br')}
+                                onMouseDown={(e) => handleResizeStart(e, displayEl, 'br')}
                                 className="absolute -bottom-2 -right-2 w-4 h-4 bg-white border border-indigo-500 rounded-full cursor-se-resize" 
                             />
                         </>
@@ -271,7 +257,7 @@ export const EditorOverlay: React.FC = () => {
                     
                     {/* Label/Debug */}
                     <div className="absolute -top-6 left-0 bg-indigo-500 text-white text-[10px] px-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                        {el.type} {Math.round(el.x)},{Math.round(el.y)}
+                        {displayEl.type} {Math.round(displayEl.x)},{Math.round(displayEl.y)}
                     </div>
                 </div>
 

@@ -3,7 +3,6 @@ import { CompositionEngine } from '../engine/CompositionEngine';
 import { useAppStore } from '../stores/useAppStore';
 
 export const Viewport: React.FC = () => {
-    const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const engineRef = useRef<CompositionEngine | null>(null);
     const toggleStream = useAppStore(state => state.toggleStream);
@@ -19,16 +18,29 @@ export const Viewport: React.FC = () => {
     }, [activeCard]);
 
     useEffect(() => {
-        if (!canvasRef.current || !containerRef.current) return;
+        if (!containerRef.current) return;
+        
+        // 1. Create fresh canvas for Offscreen transfer
+        const canvas = document.createElement('canvas');
+        canvas.className = "block w-full h-full object-contain";
+        containerRef.current.appendChild(canvas);
 
         // Initialize Engine
-        const engine = new CompositionEngine(canvasRef.current);
+        const engine = new CompositionEngine(canvas);
         engineRef.current = engine;
         (window as any).frameflowEngine = engine; // Expose for UI (StudioPanel)
         
         // Initial Card Set (Crucial for first render)
-        if (activeCard) {
-            engine.setCard(activeCard);
+        // We need to access the LATEST activeCard from the scope when effect runs?
+        // Actually, activeCard is a dependency of the other effect.
+        // But we want to set it initially here too or wait for the other effect?
+        // The other effect depends on [activeCard]. It will run after this mount effect? 
+        // Or we should merge them?
+        // Merging is tricky. Let's explicit set it here using the ref/current value if needed, 
+        // but since activeCard is from props/store, it's available in closure.
+        const currentCard = useAppStore.getState().cards.find(c => c.id === useAppStore.getState().activeCardId) || null;
+        if (currentCard) {
+            engine.setCard(currentCard);
         }
 
         // Start Engine (which starts camera)
@@ -48,18 +60,20 @@ export const Viewport: React.FC = () => {
         resizeObserver.observe(containerRef.current);
 
         return () => {
+            console.log("Cleaning up Viewport Engine");
             engine.stop();
             toggleStream(false);
             resizeObserver.disconnect();
+            if (canvas.parentNode) {
+                canvas.parentNode.removeChild(canvas);
+            }
+            engineRef.current = null;
         };
     }, []);
 
     return (
-        <div ref={containerRef} className="w-full h-full relative overflow-hidden bg-black rounded-xl">
-            <canvas 
-                ref={canvasRef} 
-                className="block w-full h-full object-cover"
-            />
+        <div ref={containerRef} className="absolute inset-0 overflow-hidden bg-black rounded-xl">
+           {/* Canvas injected dynamically */}
         </div>
     );
 };

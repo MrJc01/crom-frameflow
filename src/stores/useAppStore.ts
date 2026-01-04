@@ -146,8 +146,8 @@ export const useAppStore = create<AppState>((set) => ({
                   content: 'camera-feed', 
                   x: 0,
                   y: 0,
-                  width: 480,
-                  height: 270,
+                  width: 1920,
+                  height: 1080,
                   rotation: 0,
                   zIndex: 0,
                   opacity: 1

@@ -267,7 +267,7 @@ export const StudioPanel: React.FC = () => {
                     onClick={() => setIsExpanded(!isExpanded)}
                     className="p-2 hover:bg-white/10 rounded-lg transition-colors"
                 >
-                    {isExpanded ? <ChevronDown className="w-5 h-5 text-white/70" /> : <ChevronUp className="w-5 h-5 text-white/70" />}
+                    {isExpanded ? <ChevronDown className="w-5 h-5 text-white/70 pointer-events-none" /> : <ChevronUp className="w-5 h-5 text-white/70 pointer-events-none" />}
                 </button>
 
                 {/* Record Button & Status */}
@@ -310,14 +310,14 @@ export const StudioPanel: React.FC = () => {
                         
                         {/* Playback Controls */}
                         <div className="flex items-center gap-2">
-                            <button className="p-2 hover:bg-white/10 rounded-full text-white/70">
-                                <SkipBack className="w-4 h-4" onClick={() => setTimelineTime(0)} />
+                            <button className="p-2 hover:bg-white/10 rounded-full text-white/70" onClick={() => setTimelineTime(0)}>
+                                <SkipBack className="w-4 h-4 pointer-events-none" />
                             </button>
                             <button 
                                 className="p-2 bg-white text-black rounded-full hover:bg-white/90"
                                 onClick={togglePlayback}
                             >
-                                {timeline.isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                                {timeline.isPlaying ? <Pause className="w-4 h-4 fill-current pointer-events-none" /> : <Play className="w-4 h-4 fill-current pointer-events-none" />}
                             </button>
                         </div>
 
@@ -340,13 +340,13 @@ export const StudioPanel: React.FC = () => {
                         
                         <div className="h-6 w-px bg-white/10 mx-2" />
                         
-                        {/* Export Button */}
+                         {/* Export Button */}
                         <button 
                             onClick={handleExport}
                             disabled={isExporting}
                             className="bg-purple-600 hover:bg-purple-500 text-white text-xs px-3 py-1 rounded font-medium disabled:opacity-50 flex items-center gap-2"
                         >
-                            <Download className="w-3 h-3" />
+                            <Download className="w-3 h-3 pointer-events-none" />
                             {isExporting ? `Exporting ${Math.round(exportProgress)}%` : 'Export MP4'}
                         </button>
                     </div>
@@ -361,10 +361,10 @@ export const StudioPanel: React.FC = () => {
                      {/* Toolbar */}
                     <div className="h-8 border-b border-white/5 flex items-center px-4 gap-2 bg-[#1a1a1a]">
                         <button className="flex items-center gap-1 text-[10px] bg-white/5 px-2 py-1 rounded hover:bg-white/10 text-white">
-                             <Plus className="w-3 h-3" /> Add Track
+                             <Plus className="w-3 h-3 pointer-events-none" /> Add Track
                         </button>
                         <button className="flex items-center gap-1 text-[10px] bg-white/5 px-2 py-1 rounded hover:bg-white/10 text-white">
-                             <Scissors className="w-3 h-3" /> Split
+                             <Scissors className="w-3 h-3 pointer-events-none" /> Split
                         </button>
                     </div>
 
@@ -466,7 +466,7 @@ export const StudioPanel: React.FC = () => {
                                      onDragStart={(e) => handleDragStart(e, asset)}
                                  >
                                      <div className="w-full h-full bg-black/50 flex items-center justify-center text-gray-500 text-xs">
-                                         {asset.type === 'video' ? <Clapperboard className="w-4 h-4 mb-1" /> : <Mic className="w-4 h-4 mb-1" />}
+                                         {asset.type === 'video' ? <Clapperboard className="w-4 h-4 mb-1 pointer-events-none" /> : <Mic className="w-4 h-4 mb-1 pointer-events-none" />}
                                      </div>
                                      <div className="mt-1 text-[10px] text-gray-400 truncate px-1">{asset.name}</div>
                                  </div>

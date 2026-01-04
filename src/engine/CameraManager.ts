@@ -141,4 +141,8 @@ export class CameraManager {
           stream.getTracks().forEach(t => t.enabled = true);
       });
   }
+
+  getActiveSources(): VideoSource[] {
+      return Array.from(this.sources.values());
+  }
 }
