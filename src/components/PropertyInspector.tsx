@@ -461,6 +461,14 @@ const CameraInspector: React.FC<{
         fetchDevices();
     }, []);
     
+    const handleStartCamera = (deviceId?: string) => {
+         console.log('[CameraInspector] Starting camera for element:', element.id, 'device:', deviceId);
+         window.dispatchEvent(new CustomEvent('frameflow:start-camera', { 
+             detail: { elementId: element.id, deviceId } 
+         }));
+         updateElement({ sourceType: 'camera', deviceId });
+    };
+
     const handleStartScreen = () => {
          window.dispatchEvent(new CustomEvent('frameflow:start-screen-share', { detail: { elementId: element.id } }));
          updateElement({ sourceType: 'display' });
@@ -472,11 +480,11 @@ const CameraInspector: React.FC<{
              
              <div className="flex gap-2 mb-2">
                  <button 
-                    onClick={() => updateElement({ sourceType: 'camera' })}
+                    onClick={() => handleStartCamera(element.deviceId)}
                     className={`flex-1 p-1 text-xs rounded border ${(!element.sourceType || element.sourceType === 'camera') ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300' : 'border-transparent hover:bg-white/5'}`}
                  >Camera</button>
                  <button 
-                    onClick={() => updateElement({ sourceType: 'display' })}
+                    onClick={handleStartScreen}
                     className={`flex-1 p-1 text-xs rounded border ${element.sourceType === 'display' ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300' : 'border-transparent hover:bg-white/5'}`}
                  >Screen</button>
              </div>
@@ -486,7 +494,7 @@ const CameraInspector: React.FC<{
                      <label className="text-[10px] text-gray-400 block mb-1">Device</label>
                      <select 
                         value={element.deviceId || ''}
-                        onChange={(e) => updateElement({ deviceId: e.target.value })}
+                        onChange={(e) => handleStartCamera(e.target.value || undefined)}
                         className="w-full bg-black/20 border border-white/10 rounded px-2 py-1 text-xs outline-none focus:border-indigo-500"
                      >
                          <option value="">Default Camera</option>

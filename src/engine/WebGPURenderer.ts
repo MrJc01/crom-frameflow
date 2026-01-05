@@ -1,6 +1,6 @@
-import { basicShader } from './shaders/basic.wgsl';
-import { mixShader } from './shaders/mix.wgsl';
-import { equirectShader } from './shaders/equirect.wgsl'; // Implicit import?
+import { basicShader } from './shaders/basic.wgsl.ts';
+import { mixShader } from './shaders/mix.wgsl.ts';
+import { equirectShader } from './shaders/equirect.wgsl.ts';
 
 export interface RenderLayer {
     texture: VideoFrame | ImageBitmap;

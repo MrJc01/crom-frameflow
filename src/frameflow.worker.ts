@@ -94,7 +94,20 @@ function precomputeKeyframes(card: Card) {
 // ...
 
 function renderComposition(width: number, height: number) {
-    if (!activeCard) return;
+    // Debug: Log render state
+    if (!activeCard) {
+        // Only log occasionally to avoid spam
+        if (Math.random() < 0.01) {
+            console.log('[Worker] renderComposition: No activeCard set');
+        }
+        return;
+    }
+    
+    if (activeCard.elements.length === 0) {
+        if (Math.random() < 0.01) {
+            console.log('[Worker] renderComposition: Card has no elements', activeCard.id);
+        }
+    }
 
     // ... scaling logic ...
     const sceneW = activeCard.width || 1920;
@@ -124,6 +137,10 @@ function renderComposition(width: number, height: number) {
                  texture = imageCache.get(el.content) || null;
              } else if (el.type === 'camera') {
                  texture = cameraFrameCache.get(el.id) || null;
+                 // Debug: Log camera texture lookup
+                 if (Math.random() < 0.01) {
+                     console.log('[Worker] Camera texture lookup for:', el.id, 'found:', !!texture, 'cache size:', cameraFrameCache.size);
+                 }
              } else if (el.type === 'video') {
                  // ... video logic ...
                  if (el.assetId) {
@@ -430,10 +447,12 @@ self.onmessage = async (e: MessageEvent) => {
             break;
         case 'SET_CARD':
             activeCard = payload;
+            console.log('[Worker] SET_CARD received:', activeCard ? `id=${activeCard.id}, elements=${activeCard.elements?.length || 0}` : 'null');
             if (activeCard) {
                 precomputeKeyframes(activeCard);
                 activeCard.elements.forEach(el => {
                    if (el.type === 'image' && !imageCache.has(el.content)) {
+                       console.log('[Worker] Loading image:', el.content);
                        fetch(el.content)
                         .then(r => r.blob())
                         .then(b => createImageBitmap(b))
@@ -472,6 +491,10 @@ self.onmessage = async (e: MessageEvent) => {
         
         // --- Frame Injection from Main Thread ---
         case 'CAMERA_FRAME':
+            // Debug: Log frame reception occasionally
+            if (Math.random() < 0.01) {
+                console.log('[Worker] CAMERA_FRAME received for:', payload.id);
+            }
             if (cameraFrameCache.has(payload.id)) {
                 cameraFrameCache.get(payload.id)?.close(); // GC previous
             }

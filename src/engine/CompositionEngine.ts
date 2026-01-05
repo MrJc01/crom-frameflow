@@ -60,10 +60,10 @@ export class CompositionEngine {
   private rafId: number | null = null;
   private lastRenderMode: 'COMPOSITION' | 'TIMELINE' = 'COMPOSITION';
 
-  // Shared Memory for Timeline State
-  private sharedBuffer: SharedArrayBuffer;
-  private sharedTimeView: Float64Array;
-  private sharedStateView: Int32Array; // [isPlaying, ...]
+  // Shared Memory for Timeline State (fallback to null if not available)
+  private sharedBuffer: SharedArrayBuffer | null = null;
+  private sharedTimeView: Float64Array | null = null;
+  private sharedStateView: Int32Array | null = null; // [isPlaying, ...]
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -74,9 +74,19 @@ export class CompositionEngine {
     // Layout: 
     //   0-8: CurrentTime (Float64)
     //   8-12: IsPlaying (Int32)
-    this.sharedBuffer = new SharedArrayBuffer(1024);
-    this.sharedTimeView = new Float64Array(this.sharedBuffer, 0, 1);
-    this.sharedStateView = new Int32Array(this.sharedBuffer, 8, 1);
+    // SharedArrayBuffer requires COOP/COEP headers - graceful fallback if unavailable
+    try {
+      if (typeof SharedArrayBuffer !== 'undefined' && crossOriginIsolated) {
+        this.sharedBuffer = new SharedArrayBuffer(1024);
+        this.sharedTimeView = new Float64Array(this.sharedBuffer, 0, 1);
+        this.sharedStateView = new Int32Array(this.sharedBuffer, 8, 1);
+        console.log('[CompositionEngine] SharedArrayBuffer enabled for high-performance sync');
+      } else {
+        console.log('[CompositionEngine] SharedArrayBuffer not available, using message-based sync');
+      }
+    } catch (e) {
+      console.warn('[CompositionEngine] SharedArrayBuffer initialization failed, using fallback:', e);
+    }
 
     // Hidden Video Jail
     this.videoContainer = document.createElement('div');
@@ -86,13 +96,13 @@ export class CompositionEngine {
     // 1. Initialize Worker
     this.worker = new Worker(new URL('../frameflow.worker.ts', import.meta.url), { type: 'module' });
 
-    // 2. Transfer Canvas AND SharedBuffer
+    // 2. Transfer Canvas AND SharedBuffer (if available)
     const offscreen = this.canvas.transferControlToOffscreen();
     this.worker.postMessage({ 
         type: 'INIT', 
         payload: { 
             canvas: offscreen,
-            sharedBuffer: this.sharedBuffer 
+            sharedBuffer: this.sharedBuffer // null if not available
         } 
     }, [offscreen]); // sharedBuffer is NOT transferable, it is shared.
 
@@ -100,7 +110,8 @@ export class CompositionEngine {
     this.worker.onmessage = (e) => {
         const { type, payload } = e.data;
         if (type === 'TIME_UPDATE') {
-            // Fallback / Low frequency event for React State
+            // Message-based fallback for timeline sync
+            this.timelineState.currentTime = payload;
             if (this.onTimeUpdate) this.onTimeUpdate(payload);
         } else if (type === 'GPU_CAPABILITIES') {
             eventBus.emit('GPU_CAPABILITIES', payload);
@@ -108,14 +119,16 @@ export class CompositionEngine {
         }
     };
     
-    // Start Polling Loop for Timeline Sync (High Frequency for Audio/Gizmos)
-    this.startSyncLoop();
+    // Start Polling Loop for Timeline Sync (only if SharedArrayBuffer is available)
+    if (this.sharedStateView && this.sharedTimeView) {
+      this.startSyncLoop();
+    }
   }
 
   private startSyncLoop() {
       const loop = () => {
-          if (this.sharedStateView[0] === 1) { // IsPlaying
-               this.timelineState.currentTime = this.sharedTimeView[0];
+          if (this.sharedStateView && this.sharedStateView[0] === 1) { // IsPlaying
+               this.timelineState.currentTime = this.sharedTimeView![0];
                eventBus.emit('TIME_UPDATE', this.timelineState.currentTime);
           }
           requestAnimationFrame(loop);
@@ -153,6 +166,39 @@ export class CompositionEngine {
   public setPreviewQuality(_quality: string) {
       // Stub
   }
+
+  public setCard(card: EngineCard | null) {
+      this.activeCard = card;
+      this.lastRenderMode = 'COMPOSITION';
+      this.worker.postMessage({ type: 'SET_CARD', payload: card });
+      
+      // Auto-start cameras for camera elements
+      if (card && card.elements) {
+          card.elements.forEach(el => {
+              if (el.type === 'camera') {
+                  // Check if this camera is already active
+                  const existingSource = this.cameraManager.getSource(el.id);
+                  if (!existingSource) {
+                      console.log('[CompositionEngine] Auto-starting camera for element:', el.id);
+                      this.cameraManager.startCamera(el.id, (el as any).deviceId).catch(err => {
+                          console.warn('[CompositionEngine] Failed to auto-start camera:', err);
+                      });
+                  }
+              }
+          });
+      }
+  }
+
+  public setTimelineState(state: { tracks: any[], currentTime: number, isPlaying: boolean }) {
+      this.timelineState = state;
+      this.lastRenderMode = 'TIMELINE';
+      this.worker.postMessage({ type: 'SET_TIMELINE', payload: state });
+  }
+
+  public setRenderMode(mode: 'COMPOSITION' | 'TIMELINE') {
+      this.lastRenderMode = mode;
+      this.worker.postMessage({ type: 'SET_RENDER_MODE', payload: mode });
+  }
   
   resize(width: number, height: number) {
       this.worker.postMessage({ type: 'RESIZE', payload: { width, height } });
@@ -166,18 +212,53 @@ export class CompositionEngine {
       this.start(); 
   }
   
+  // Event handler references for cleanup
+  private cameraEventHandler: ((e: Event) => void) | null = null;
+  private screenShareEventHandler: ((e: Event) => void) | null = null;
+
   async start() {
        this.isRunning = true;
-        window.addEventListener('frameflow:start-screen-share', (e: any) => {
-            const { elementId } = e.detail;
-            this.cameraManager.startScreenShare(elementId).catch(console.error);
-        });
+       
+       // Remove any existing handlers first (in case of re-start)
+       if (this.cameraEventHandler) {
+           window.removeEventListener('frameflow:start-camera', this.cameraEventHandler);
+       }
+       if (this.screenShareEventHandler) {
+           window.removeEventListener('frameflow:start-screen-share', this.screenShareEventHandler);
+       }
+       
+       // Camera start event handler
+       this.cameraEventHandler = (e: Event) => {
+           const { elementId, deviceId } = (e as CustomEvent).detail;
+           console.log('[CompositionEngine] Starting camera for element:', elementId, 'device:', deviceId);
+           this.cameraManager.startCamera(elementId, deviceId).catch(console.error);
+       };
+       window.addEventListener('frameflow:start-camera', this.cameraEventHandler);
+       
+       // Screen share event handler
+       this.screenShareEventHandler = (e: Event) => {
+           const { elementId } = (e as CustomEvent).detail;
+           this.cameraManager.startScreenShare(elementId).catch(console.error);
+       };
+       window.addEventListener('frameflow:start-screen-share', this.screenShareEventHandler);
+       
        this.loop();
   }
   
   stop() {
       this.isRunning = false;
       if (this.rafId) cancelAnimationFrame(this.rafId);
+      
+      // Remove event listeners
+      if (this.cameraEventHandler) {
+          window.removeEventListener('frameflow:start-camera', this.cameraEventHandler);
+          this.cameraEventHandler = null;
+      }
+      if (this.screenShareEventHandler) {
+          window.removeEventListener('frameflow:start-screen-share', this.screenShareEventHandler);
+          this.screenShareEventHandler = null;
+      }
+      
       this.cameraManager.stopAll();
   }
 
@@ -187,6 +268,11 @@ export class CompositionEngine {
       // 1. Pump Camera Frames
       const sources = this.cameraManager.getActiveSources();
       
+      // Debug: Log active sources count occasionally
+      if (Math.random() < 0.01) {
+          console.log('[CompositionEngine] Active camera sources:', sources.length, sources.map(s => s.id));
+      }
+      
       const framePromises = sources.map(async (source) => {
           if (source.videoElement && source.videoElement.readyState >= 2) {
               try {
@@ -195,7 +281,18 @@ export class CompositionEngine {
                       type: 'CAMERA_FRAME',
                       payload: { id: source.id, bitmap }
                   }, [bitmap]);
-              } catch (e) { }
+                  // Debug: Log frame sent (higher frequency)
+                  if (Math.random() < 0.05) {
+                      console.log('[CompositionEngine] ✓ Camera frame sent to worker for:', source.id);
+                  }
+              } catch (e) { 
+                  console.warn('[CompositionEngine] Failed to create bitmap from camera:', e);
+              }
+          } else if (source.videoElement) {
+              // Debug: Log why video not ready (ALWAYS for first few seconds)
+              console.log('[CompositionEngine] Camera video not ready, readyState:', source.videoElement.readyState, 'for:', source.id);
+          } else {
+              console.log('[CompositionEngine] No video element for source:', source.id);
           }
       });
       

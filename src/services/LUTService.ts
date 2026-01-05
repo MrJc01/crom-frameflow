@@ -57,25 +57,23 @@ export class LUTService {
 
     /**
      * Tries to parse using WASM if available, falls back to JS.
+     * Note: WASM module must be built separately via `wasm-pack build` in src-wasm/
      */
     static async parseCubeAsync(content: string): Promise<LUTData> {
+        // WASM module not built - use JS fallback directly
+        // To enable WASM: run `wasm-pack build --target web` in src-wasm/
+        // Then uncomment the WASM import below
+        /*
         try {
-            // Dynamic import to avoid bundling issues if WASM is missing
-            // @ts-ignore
             const wasm = await import('../../../src-wasm/pkg/frameflow_wasm.js');
-            await wasm.default(); // Initialize WASM
-            
+            await wasm.default();
             const raw = wasm.parse_cube(content);
-            const size = raw.size as number;
-            const data = raw.data as Float32Array; // wasm-bindgen returns TypedArray view or copy?
-            // If it returns a View, we must slice it because memory might grow.
-            // Our Rust getter returns `Vec<f32>` which wasm-bindgen converts to `Float32Array` copy for us usually.
-            
-            return { size, data };
+            return { size: raw.size, data: raw.data };
         } catch (e) {
             console.warn("WASM LUT parse failed, falling back to JS", e);
-            return this.parseCube(content);
         }
+        */
+        return this.parseCube(content);
     }
 
     /**
