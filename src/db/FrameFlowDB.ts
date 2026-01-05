@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+import { compressData, decompressData } from '../utils/compression';
 
 interface FrameFlowVersioning extends DBSchema {
   assets: {
@@ -7,7 +8,15 @@ interface FrameFlowVersioning extends DBSchema {
       id: string;
       name: string;
       type: 'image' | 'video' | 'audio';
-      blob: Blob;
+      blob?: Blob; // Optional if path is present
+      path?: string; // Local filesystem path (Tauri)
+      proxyPath?: string; // Path to generated low-res proxy
+      fileHandle?: FileSystemFileHandle; // File System Access API
+      metadata?: {
+          width: number;
+          height: number;
+          duration: number;
+      };
       dateAdded: number;
     };
     indexes: { 'by-date': number };
@@ -19,7 +28,7 @@ interface FrameFlowVersioning extends DBSchema {
       title: string;
       lastModified: number;
       thumbnail?: string; // Base64 thumbnail for quick list view
-      data: any; // Full Project JSON (Cards, Elements, etc.)
+      data: any; // Full Project JSON (or Blob if compressed)
     };
     indexes: { 'by-date': number };
   };
@@ -29,34 +38,58 @@ class FrameFlowDB {
   private dbPromise: Promise<IDBPDatabase<FrameFlowVersioning>>;
 
   constructor() {
-    this.dbPromise = openDB<FrameFlowVersioning>('frameflow-db', 1, {
-      upgrade(db) {
-        // Assets Store
-        const assetStore = db.createObjectStore('assets', { keyPath: 'id' });
-        assetStore.createIndex('by-date', 'dateAdded');
+    this.dbPromise = openDB<FrameFlowVersioning>('frameflow-db', 2, { // Version bump to 2
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+            // Assets Store
+            const assetStore = db.createObjectStore('assets', { keyPath: 'id' });
+            assetStore.createIndex('by-date', 'dateAdded');
 
-        // Projects Store
-        const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
-        projectStore.createIndex('by-date', 'lastModified');
+            // Projects Store
+            const projectStore = db.createObjectStore('projects', { keyPath: 'id' });
+            projectStore.createIndex('by-date', 'lastModified');
+        }
+        // Future migrations handle here
       },
     });
   }
 
   // --- Asset Operations ---
 
-  async addAsset(file: File): Promise<string> {
+  async addAsset(file: File, path?: string, metadata?: { width: number, height: number, duration: number }, fileHandle?: FileSystemFileHandle, proxyPath?: string): Promise<string> {
     const id = crypto.randomUUID();
     const type = file.type.startsWith('image') ? 'image' : 
                  file.type.startsWith('video') ? 'video' : 'audio'; // Simplification
     
+    // If we have a handle or path, we can skip storing the blob to save space 
+    // IF we are sure we can retrieve it. 
+    // For handles, we need permission, so maybe keep blob as fallback?
+    // Actually, zero-copy goal implies NOT storing blob.
+    const shouldStoreBlob = !path && !fileHandle;
+
     await (await this.dbPromise).add('assets', {
       id,
       name: file.name,
       type: type as any,
-      blob: file,
+      blob: shouldStoreBlob ? file : undefined,
+      path,
+      proxyPath,
+      fileHandle,
+      metadata,
       dateAdded: Date.now(),
     });
     return id;
+  }
+
+  async updateAsset(id: string, updates: Partial<FrameFlowVersioning['assets']['value']>) {
+    const db = await this.dbPromise;
+    const tx = db.transaction('assets', 'readwrite');
+    const store = tx.objectStore('assets');
+    const asset = await store.get(id);
+    if (asset) {
+        await store.put({ ...asset, ...updates });
+    }
+    await tx.done;
   }
 
   async getAsset(id: string) {
@@ -78,12 +111,19 @@ class FrameFlowDB {
     // Ensure project has ID
     project.id = id; 
 
+    let dataToStore = project;
+    try {
+        dataToStore = await compressData(project);
+    } catch (e) {
+        console.warn("Compression failed, storing uncompressed", e);
+    }
+
     await (await this.dbPromise).put('projects', {
       id,
       title: project.title || 'Untitled Project',
       lastModified: Date.now(),
       thumbnail,
-      data: project
+      data: dataToStore
     });
     return id;
   }
@@ -93,7 +133,15 @@ class FrameFlowDB {
   }
   
   async getProject(id: string) {
-      return (await this.dbPromise).get('projects', id);
+      const record = await (await this.dbPromise).get('projects', id);
+      if (record && record.data instanceof Blob) {
+           try {
+              record.data = await decompressData(record.data);
+           } catch(e) {
+              console.error("Decompression failed", e);
+           }
+      }
+      return record;
   }
 
   async deleteProject(id: string) {

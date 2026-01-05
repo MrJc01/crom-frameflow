@@ -1,6 +1,7 @@
 import React from 'react';
 import { Type, Camera, Image, Square, MousePointer2 } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
+import { Tooltip } from './Tooltip';
 
 export const FloatingToolbar: React.FC = () => {
     const activeCardId = useAppStore(state => state.activeCardId);
@@ -36,61 +37,62 @@ export const FloatingToolbar: React.FC = () => {
     };
 
     const handleAddImage = () => {
-        // Trigger the global image input - this is a bit hacky, 
-        // ideally we move that ref to store or context, but for now we'll dispatch an event or just use the same logic if we pass the ref?
-        // Let's assume we can trigger the input in App.tsx via a custom event or store flag.
-        // For simplicity: We will dispatch a custom event that App.tsx listens to.
         window.dispatchEvent(new CustomEvent('trigger-image-upload'));
     };
 
     const handleAddShape = () => {
          if (!activeCard) return;
-         // Placeholder for shape logic (using image/box for now)
          console.log("Add Shape clicked - Coming Soon");
     };
 
     return (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 p-1.5 bg-[#1a1a1a]/80 backdrop-blur-xl border border-white/10 rounded-full shadow-2xl z-50">
-            <button className="p-2 hover:bg-white/10 rounded-full transition-colors text-white tooltip" title="Select">
-                <MousePointer2 className="w-5 h-5" />
-            </button>
+            <Tooltip content="Select Tool" position="top">
+                <button className="p-2 hover:bg-white/10 rounded-full transition-colors text-white">
+                    <MousePointer2 className="w-5 h-5" />
+                </button>
+            </Tooltip>
             <div className="w-px h-6 bg-white/10 mx-1" />
             
-            <button 
-                onClick={handleAddText}
-                disabled={!activeCard}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed" 
-                title="Add Text"
-            >
-                <Type className="w-5 h-5" />
-            </button>
+            <Tooltip content="Add Text" position="top">
+                <button 
+                    onClick={handleAddText}
+                    disabled={!activeCard}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                    <Type className="w-5 h-5" />
+                </button>
+            </Tooltip>
             
-            <button 
-                onClick={handleAddCamera}
-                disabled={!activeCard}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed" 
-                title="Add Camera"
-            >
-                <Camera className="w-5 h-5" />
-            </button>
+            <Tooltip content="Add Camera" position="top">
+                <button 
+                    onClick={handleAddCamera}
+                    disabled={!activeCard}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                    <Camera className="w-5 h-5" />
+                </button>
+            </Tooltip>
             
-            <button 
-                onClick={handleAddImage}
-                disabled={!activeCard}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed" 
-                title="Add Image"
-            >
-                <Image className="w-5 h-5" />
-            </button>
+            <Tooltip content="Add Image" position="top">
+                <button 
+                    onClick={handleAddImage}
+                    disabled={!activeCard}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                    <Image className="w-5 h-5" />
+                </button>
+            </Tooltip>
 
-            <button 
-                onClick={handleAddShape}
-                disabled={!activeCard}
-                className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed" 
-                title="Add Shape"
-            >
-                <Square className="w-5 h-5" />
-            </button>
+            <Tooltip content="Add Shape" position="top">
+                <button 
+                    onClick={handleAddShape}
+                    disabled={!activeCard}
+                    className="p-2 hover:bg-white/10 rounded-full transition-colors text-white disabled:opacity-30 disabled:cursor-not-allowed"
+                >
+                    <Square className="w-5 h-5" />
+                </button>
+            </Tooltip>
         </div>
     );
 };

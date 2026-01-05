@@ -1,6 +1,8 @@
 import { CameraManager } from './CameraManager';
+import { AudioEngine } from './AudioEngine'; // New Import
 // import { useAppStore } from '../stores/useAppStore'; // Store access might be needed for events
-import { db } from '../db/FrameFlowDB'; 
+import { db } from '../db/FrameFlowDB';
+import { eventBus } from '../services/EventBus'; 
 
 export interface SceneElement {
   id: string;
@@ -45,6 +47,7 @@ export class CompositionEngine {
   private worker: Worker;
   private canvas: HTMLCanvasElement;
   private cameraManager: CameraManager;
+  private audioEngine: AudioEngine; // New
   private activeCard: EngineCard | null = null;
   private isRunning: boolean = false;
   private videoContainer: HTMLDivElement;
@@ -57,101 +60,94 @@ export class CompositionEngine {
   private rafId: number | null = null;
   private lastRenderMode: 'COMPOSITION' | 'TIMELINE' = 'COMPOSITION';
 
+  // Shared Memory for Timeline State
+  private sharedBuffer: SharedArrayBuffer;
+  private sharedTimeView: Float64Array;
+  private sharedStateView: Int32Array; // [isPlaying, ...]
+
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.cameraManager = new CameraManager();
+    this.audioEngine = new AudioEngine(); 
 
-    // Hidden Video Jail (Off-screen but "visible" to forcing decoding)
+    // Initialize Shared Buffer (1024 bytes)
+    // Layout: 
+    //   0-8: CurrentTime (Float64)
+    //   8-12: IsPlaying (Int32)
+    this.sharedBuffer = new SharedArrayBuffer(1024);
+    this.sharedTimeView = new Float64Array(this.sharedBuffer, 0, 1);
+    this.sharedStateView = new Int32Array(this.sharedBuffer, 8, 1);
+
+    // Hidden Video Jail
     this.videoContainer = document.createElement('div');
     this.videoContainer.style.cssText = "position: fixed; top: -9999px; left: -9999px; width: 16px; height: 16px; opacity: 0; pointer-events: none; z-index: -1;";
     document.body.appendChild(this.videoContainer);
 
-    // 1. Initialize Worker (Standard)
+    // 1. Initialize Worker
     this.worker = new Worker(new URL('../frameflow.worker.ts', import.meta.url), { type: 'module' });
 
-    // 2. Transfer Canvas
+    // 2. Transfer Canvas AND SharedBuffer
     const offscreen = this.canvas.transferControlToOffscreen();
-    this.worker.postMessage({ type: 'INIT', payload: { canvas: offscreen } }, [offscreen]);
+    this.worker.postMessage({ 
+        type: 'INIT', 
+        payload: { 
+            canvas: offscreen,
+            sharedBuffer: this.sharedBuffer 
+        } 
+    }, [offscreen]); // sharedBuffer is NOT transferable, it is shared.
 
     // 3. Listen
     this.worker.onmessage = (e) => {
         const { type, payload } = e.data;
         if (type === 'TIME_UPDATE') {
-            this.timelineState.currentTime = payload; // Critical: Sync internal state for video pump
+            // Fallback / Low frequency event for React State
             if (this.onTimeUpdate) this.onTimeUpdate(payload);
+        } else if (type === 'GPU_CAPABILITIES') {
+            eventBus.emit('GPU_CAPABILITIES', payload);
+            console.log("Engine: Received GPU Capabilities", payload);
         }
     };
+    
+    // Start Polling Loop for Timeline Sync (High Frequency for Audio/Gizmos)
+    this.startSyncLoop();
   }
 
-  public setRenderMode(mode: 'COMPOSITION' | 'TIMELINE') {
-      if (this.lastRenderMode === mode) return;
-      this.lastRenderMode = mode;
-      
-      this.worker.postMessage({ type: 'SET_MODE', payload: mode });
-      
-      if (mode === 'TIMELINE') {
-          this.cameraManager.pauseAll();
-      } else {
-          this.cameraManager.resumeAll();
-      }
+  private startSyncLoop() {
+      const loop = () => {
+          if (this.sharedStateView[0] === 1) { // IsPlaying
+               this.timelineState.currentTime = this.sharedTimeView[0];
+               eventBus.emit('TIME_UPDATE', this.timelineState.currentTime);
+          }
+          requestAnimationFrame(loop);
+      };
+      loop();
   }
 
-  public setTimelineState(state: { tracks: any[], currentTime: number, isPlaying: boolean }) {
-      this.timelineState = state;
-      // Proxy to worker
-      this.worker.postMessage({ type: 'UPDATE_TIMELINE', payload: state });
-      
-      if (state.isPlaying) this.play();
-      else this.pause();
-  }
-  
-  public setCard(card: EngineCard | null) {
-      this.activeCard = card;
-      this.worker.postMessage({ type: 'SET_CARD', payload: card });
-      
-      // Handle Camera Logic ON MAIN THREAD (as before)
-      if (card) {
-          card.elements.forEach(el => {
-               if (el.type === 'camera') {
-                   // ... (Same Camera Setup Logic as before) ...
-                   const currentSource = this.cameraManager.getSource(el.id);
-                   const targetType = el.sourceType || 'camera';
-                   const targetDevice = el.deviceId;
 
-                   const needsUpdate = !currentSource || 
-                                       currentSource.type !== targetType || 
-                                       (targetType === 'camera' && currentSource.deviceId !== targetDevice);
-
-                   if (needsUpdate) {
-                       if (targetType === 'camera') {
-                            this.cameraManager.startCamera(el.id, targetDevice).catch(console.error);
-                       } else if (targetType === 'display' && !currentSource) {
-                           if (currentSource) this.cameraManager.stop(el.id);
-                       }
-                   }
-               }
-          });
-      }
-  }
-
-  // ... (methods)
 
   public play() {
+      this.audioEngine.resume(); 
       this.worker.postMessage({ type: 'PLAY' });
       this.startLoop(); 
+      eventBus.emit('PLAYBACK_STATE', 'playing');
   }
 
   public pause() {
       this.worker.postMessage({ type: 'PAUSE' });
-      this.worker.postMessage({ type: 'PAUSE' }); 
+      eventBus.emit('PLAYBACK_STATE', 'paused');
   }
 
   public seek(time: number) {
       this.worker.postMessage({ type: 'SEEK', payload: time });
+      eventBus.emit('TIME_UPDATE', time);
   }
 
   public setTimeUpdateCallback(cb: (time: number) => void) {
       this.onTimeUpdate = cb;
+  }
+
+  public setFps(fps: number) {
+      this.worker.postMessage({ type: 'SET_FPS', payload: fps });
   }
   
   public setPreviewQuality(_quality: string) {
@@ -264,25 +260,51 @@ export class CompositionEngine {
                    video.autoplay = false; 
                    video.loop = true; // Keep it alive
                    
-                   const v = video; // Capture for closure
+                   const v = video; 
                    video.onerror = (_e) => console.error("[VideoPump] Video Error", v.error, task.assetId);
 
-                   // video.style.display = 'none'; // Already in hidden container, but sure
-                   
-                   // Attach to DOM (Critical for some browsers)
+                   // Attach to DOM 
                    this.videoContainer.appendChild(video);
 
-                   // Load Asset
-                   const asset = await db.getAsset(task.assetId);
-                   if (asset && asset.blob) {
-                       video.src = URL.createObjectURL(asset.blob);
-                       video.load(); 
-                       // Force play to pivot decoder
-                       video.play().catch(e => console.error("[VideoPump] Auto-play failed", e));
-                   } else {
-                       console.warn(`[VideoPump] Asset not found or invalid: ${task.assetId}`);
-                   }
+                    // Load Asset
+                    const asset = await db.getAsset(task.assetId);
+                    if (asset) {
+                        if (asset.proxyPath) {
+                             console.log(`[VideoPump] Using Proxy for ${task.assetId}`);
+                             video.src = `frameflow://${encodeURIComponent(asset.proxyPath)}`;
+                        } else if (asset.path) {
+                             video.src = `frameflow://${encodeURIComponent(asset.path)}`;
+                        } else if (asset.blob) {
+                             video.src = URL.createObjectURL(asset.blob);
+                        }
+                        
+                        video.load(); 
+                        video.play().catch(() => {}); // Attempt play
+                        
+                        // Setup rVFC Loop for this video
+                        const onFrame = (_now: number, _metadata: VideoFrameCallbackMetadata) => {
+                             if (!this.videoElements.has(task.assetId)) return; // Stopped?
+                             
+                             createImageBitmap(v).then(bitmap => {
+                                 this.worker.postMessage({
+                                     type: 'VIDEO_FRAME',
+                                     payload: { url: task.assetId, bitmap }
+                                 }, [bitmap]);
+                             }).catch(_e => {}); // Ignore closed/empty errors
+                             
+                             if (v.requestVideoFrameCallback) {
+                                 v.requestVideoFrameCallback(onFrame);
+                             }
+                        };
+                        
+                        if (video.requestVideoFrameCallback) {
+                            video.requestVideoFrameCallback(onFrame);
+                        }
+                    } else {
+                        console.warn(`[VideoPump] Asset not found or invalid: ${task.assetId}`);
+                    }
                    this.videoElements.set(task.assetId, video);
+                   this.audioEngine.connectVideo(video, 'video-master'); 
                } catch (e) {
                    console.error("Failed to init video", task.assetId, e);
                    continue;
@@ -296,16 +318,15 @@ export class CompositionEngine {
                     video.currentTime = task.time;
                 }
                 
-                if (video.readyState >= 2) {
+                // Fallback for browsers without rVFC (e.g. Firefox had late support, mostly ok now)
+                if (!video.requestVideoFrameCallback && video.readyState >= 2) {
                      try {
                          const bitmap = await createImageBitmap(video);
                          this.worker.postMessage({
                              type: 'VIDEO_FRAME',
                              payload: { url: task.assetId, bitmap }
                          }, [bitmap]);
-                     } catch (e) { 
-                         console.error("Frame capture failed", e);
-                     }
+                     } catch (e) {}
                 }
            }
       }

@@ -1,4 +1,4 @@
-import { Layers, Upload, Play, Settings } from 'lucide-react';
+import { Layers, Upload, Play, Settings, Sparkles, Download, History, Search, Subtitles, MessageSquare } from 'lucide-react';
 import { Viewport } from './components/Viewport';
 import { useAppStore, type Card } from './stores/useAppStore';
 import { EditorOverlay } from './components/EditorOverlay';
@@ -6,13 +6,40 @@ import { PropertyInspector } from './components/PropertyInspector';
 import { FloatingToolbar } from './components/FloatingToolbar';
 import { Sidebar } from './components/Sidebar';
 import { StudioPanel } from './components/StudioPanel';
-import { SettingsModal } from './components/SettingsModal';
 import { PresentationParser } from './engine/PresentationParser';
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, lazy, Suspense } from 'react';
 import { usePresentationSync } from './hooks/usePresentationSync';
+import { useMemoryMonitor } from './hooks/useMemoryMonitor';
+import { KeyboardShortcutsManager } from './components/KeyboardShortcutsManager';
+import { DropZone } from './components/DropZone';
+import { FileSystemService } from './services/FileSystemService';
+import { Toaster } from 'sonner';
+import { APP_CONFIG } from './config/constants';
+
+// Lazy Loaded Components
+const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => ({ default: m.SettingsModal })));
+const EffectPresets = lazy(() => import('./components/EffectPresets').then(m => ({ default: m.EffectPresets })));
+const QuickExport = lazy(() => import('./components/QuickExport').then(m => ({ default: m.QuickExport })));
+const HistoryPanel = lazy(() => import('./components/HistoryPanel').then(m => ({ default: m.HistoryPanel })));
+const SearchModal = lazy(() => import('./components/SearchModal').then(m => ({ default: m.SearchModal })));
+const SubtitleEditor = lazy(() => import('./components/SubtitleEditor').then(m => ({ default: m.SubtitleEditor })));
+const RecoveryPrompt = lazy(() => import('./components/RecoveryPrompt').then(m => ({ default: m.RecoveryPrompt })));
+const DiskWarning = lazy(() => import('./components/DiskWarning').then(m => ({ default: m.DiskWarning })));
+const CollectFilesModal = lazy(() => import('./components/CollectFilesModal').then(m => ({ default: m.CollectFilesModal })));
+const CollaborationModal = lazy(() => import('./components/CollaborationModal').then(m => ({ default: m.CollaborationModal })));
+const FeedbackModal = lazy(() => import('./components/FeedbackModal').then(m => ({ default: m.FeedbackModal })));
+const UpdateChecker = lazy(() => import('./components/UpdateChecker').then(m => ({ default: m.UpdateChecker })));
 
 function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isEffectsOpen, setIsEffectsOpen] = useState(false);
+  const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isSubtitlesOpen, setIsSubtitlesOpen] = useState(false);
+  const [isCollectModalOpen, setIsCollectModalOpen] = useState(false);
+  const [isCollaborationOpen, setIsCollaborationOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const addCards = useAppStore(state => state.addCards);
@@ -21,6 +48,7 @@ function App() {
   
   // Enable Sync
   usePresentationSync();
+  useMemoryMonitor();
 
   // Event Listener for Floating Toolbar Actions
   useEffect(() => {
@@ -29,8 +57,53 @@ function App() {
     return () => window.removeEventListener('trigger-image-upload', handleImageTrigger);
   }, []);
 
-  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  // Sync Splash Screen
+  useEffect(() => {
+      const closeSplash = async () => {
+          try {
+             // Dynamic import to allow running in browser mode without Tauri errors
+             const { invoke } = await import('@tauri-apps/api/core');
+             const { getCurrentWindow } = await import('@tauri-apps/api/window');
+             const mainWin = getCurrentWindow();
+             await mainWin.show(); // Show main (it's hidden by default)
+             await invoke('close_splash'); 
+          } catch (e) {
+              console.log("Not in Tauri or Splash error", e);
+          }
+      };
+      
+      // Simulate init time
+      setTimeout(closeSplash, 1000);
+  }, []);
+
+  // Cmd+K to open search
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setIsSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleImport = async (e?: React.ChangeEvent<HTMLInputElement>) => {
+    let file: File | undefined = e?.target.files?.[0];
+
+    // Try FS Access if event is undefined (called from button/shortcut) or if explicit logic needed
+    if (!file && FileSystemService.isSupported()) {
+         try {
+             const result = await FileSystemService.openFile({
+                 types: [{ description: 'PowerPoint', accept: { 'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'] } }]
+             });
+             if (result) file = result.file;
+         } catch (er) { console.error(er); }
+    } else if (!file && fileInputRef.current) {
+         fileInputRef.current.click();
+         return; // Wait for change event
+    }
+
     if (file) {
       const parser = new PresentationParser();
       try {
@@ -44,7 +117,7 @@ function App() {
                 id: `bg-${slide.id}`,
                 type: 'image',
                 content: slide.previewUrl,
-                x: 0, y: 0, width: 1920, height: 1080, // Default FHD
+                x: 0, y: 0, width: APP_CONFIG.PROJECT.DEFAULT_WIDTH, height: APP_CONFIG.PROJECT.DEFAULT_HEIGHT,
                 rotation: 0,
                 zIndex: 0
             }] : []
@@ -56,8 +129,6 @@ function App() {
       }
     }
   };
-
-
 
   const handleImageImport = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -88,7 +159,7 @@ function App() {
                       id: `el-${Date.now()}`,
                       type: 'image',
                       content: url,
-                      x: 0, y: 0, width: 1920, height: 1080,
+                      x: 0, y: 0, width: APP_CONFIG.PROJECT.DEFAULT_WIDTH, height: APP_CONFIG.PROJECT.DEFAULT_HEIGHT,
                       rotation: 0,
                       zIndex: 0
                   }]
@@ -97,9 +168,18 @@ function App() {
       }
   };
 
+  // Placeholder functions for RecoveryPrompt
+  const handleRecover = () => {
+    console.log("Recovering...");
+  };
+
+  const handleDiscardRecovery = () => {
+    console.log("Discarding recovery...");
+  };
 
 
   return (
+    <DropZone>
     <div className="min-h-screen bg-[#0d0d0d] text-white overflow-hidden font-sans selection:bg-indigo-500 selection:text-white">
       <input 
         type="file" 
@@ -115,6 +195,9 @@ function App() {
         accept="image/*" 
         className="hidden" 
       />
+
+      {/* Keyboard Processor */}
+      <KeyboardShortcutsManager />
 
       {/* Background/Canvas Area */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -150,12 +233,80 @@ function App() {
                    <Settings className="w-3 h-3" />
                    Settings
                  </button>
+                 
+                 <button 
+                   onClick={() => setIsEffectsOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <Sparkles className="w-3 h-3" />
+                   Effects
+                 </button>
+                 
+                 <button 
+                   onClick={() => setIsSearchOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1"
+                   title="Ctrl/Cmd+K">
+                   <Search className="w-3 h-3" />
+                   Search
+                 </button>
+                 
+                 <button 
+                   onClick={() => setIsHistoryOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <History className="w-3 h-3" />
+                   History
+                 </button>
+                 
+                 <button 
+                   onClick={() => setIsSubtitlesOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <Subtitles className="w-3 h-3" />
+                   Subtitles
+                 </button>
+                  <button 
+                   onClick={() => setIsFeedbackOpen(true)}
+                   className="px-3 py-1.5 text-xs hover:bg-white/5 rounded transition-colors text-gray-400 hover:text-white flex items-center gap-1">
+                   <MessageSquare className="w-3 h-3" />
+                   Feedback
+                 </button>
              </div>
+
+             {/* Export Button */}
+             <button 
+               onClick={() => setIsExportOpen(true)}
+               className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-green-600/20 flex items-center gap-2">
+               <Download className="w-4 h-4" />
+               Export
+             </button>
 
              {/* Present Button - Primary Action */}
              <button 
-               onClick={() => {
-                   window.open('/present', 'FrameFlowPresentation', 'width=1920,height=1080');
+               onClick={async () => {
+                   try {
+                       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                       // Check if exists
+                       const existing = await WebviewWindow.getByLabel('presentation');
+                       if (existing) {
+                           await existing.setFocus();
+                       } else {
+                           const webview = new WebviewWindow('presentation', {
+                               url: '/present',
+                               title: 'FrameFlow Presentation',
+                               width: 1920,
+                               height: 1080,
+                               decorations: true // Allow moving
+                           });
+                           webview.once('tauri://created', function () {
+                               // webview window successfully created
+                           });
+                           webview.once('tauri://error', function (e) {
+                               console.error(e);
+                           });
+                       }
+                   } catch (e) {
+                       // Fallback for browser
+                       console.warn("Tauri API not found, using window.open", e);
+                       window.open('/present', 'FrameFlowPresentation', 'width=1920,height=1080');
+                   }
                }}
                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-indigo-600/20 flex items-center gap-2 hover:translate-y-0.5">
                <Play className="w-4 h-4 fill-current" />
@@ -187,10 +338,36 @@ function App() {
         {/* Studio Panel (Relative Flex Item) */}
         <StudioPanel />
         
-        {/* Settings Modal */}
-        <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
+        <Suspense fallback={null}>
+            {isSettingsOpen && <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />}
+            {isEffectsOpen && <EffectPresets isOpen={isEffectsOpen} onClose={() => setIsEffectsOpen(false)} />}
+            {isExportOpen && <QuickExport isOpen={isExportOpen} onClose={() => setIsExportOpen(false)} />}
+            {isHistoryOpen && <HistoryPanel isOpen={isHistoryOpen} onClose={() => setIsHistoryOpen(false)} />}
+            {isSearchOpen && <SearchModal isOpen={isSearchOpen} onClose={() => setIsSearchOpen(false)} />}
+            {isSubtitlesOpen && <SubtitleEditor isOpen={isSubtitlesOpen} onClose={() => setIsSubtitlesOpen(false)} />}
+            <RecoveryPrompt 
+                onRecover={handleRecover}
+                onDiscard={handleDiscardRecovery}
+            />
+            <DiskWarning />
+            {isCollectModalOpen && <CollectFilesModal 
+                isOpen={isCollectModalOpen} 
+                onClose={() => setIsCollectModalOpen(false)} 
+            />}
+            {isCollaborationOpen && <CollaborationModal 
+                isOpen={isCollaborationOpen} 
+                onClose={() => setIsCollaborationOpen(false)} 
+            />}
+            {isFeedbackOpen && <FeedbackModal 
+                isOpen={isFeedbackOpen} 
+                onClose={() => setIsFeedbackOpen(false)} 
+            />}
+            <UpdateChecker />
+        </Suspense>
       </div>
+      <Toaster richColors /> {/* Added Toaster */}
     </div>
+    </DropZone>
   );
 }
 

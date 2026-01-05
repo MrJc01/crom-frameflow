@@ -1,10 +1,19 @@
 
-import React, { useEffect, useState } from 'react';
-import { Mic, Clapperboard, ChevronUp, ChevronDown, Plus, Scissors, Play, Pause, SkipBack, Download } from 'lucide-react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Mic, Clapperboard, ChevronUp, ChevronDown, Plus, Scissors, Play, Pause, SkipBack, Download, FileVideo } from 'lucide-react';
 import { useAppStore } from '../stores/useAppStore';
 import { db } from '../db/FrameFlowDB';
-import { PreviewMonitor } from './PreviewMonitor';
+
 import { TimelineRuler } from './TimelineRuler';
+import { TimelineContextMenu } from './TimelineContextMenu';
+import { WaveformClip } from './WaveformClip';
+import { RecorderControls } from './RecorderControls';
+import { TrackingOverlay } from './TrackingOverlay';
+import { EffectsRack } from './EffectsRack';
+import { TemplateGallery } from './TemplateGallery';
+import { FilePlus, Save } from 'lucide-react';
+import { APP_CONFIG } from '../config/constants';
+import { useTimeFormat } from '../hooks/useTimeFormat';
 
 export const StudioPanel: React.FC = () => {
     const isRecording = useAppStore(state => state.isRecording);
@@ -13,6 +22,15 @@ export const StudioPanel: React.FC = () => {
     const setRecordingStartTime = useAppStore(state => state.setRecordingStartTime);
     
     const addClip = useAppStore(state => state.addClip);
+    const updateClip = useAppStore(state => state.updateClip);
+    const selectedClipIds = useAppStore(state => state.selectedClipIds);
+    const setSelectedClips = useAppStore(state => state.setSelectedClips);
+    const setContextMenu = useAppStore(state => state.setContextMenu);
+
+    const showTemplateGallery = useAppStore(state => state.showTemplateGallery);
+    const setShowTemplateGallery = useAppStore(state => state.setShowTemplateGallery);
+    const saveAsTemplate = useAppStore(state => state.saveAsTemplate);
+
     
     // Timeline State
     const timeline = useAppStore(state => state.timeline);
@@ -126,7 +144,7 @@ export const StudioPanel: React.FC = () => {
                         assetId: assetId,
                         name: fileName,
                         start: startTime,
-                        duration: recordingStartTime ? (Date.now() - recordingStartTime) : 5000,
+                        duration: recordingStartTime ? (Date.now() - recordingStartTime) : APP_CONFIG.PROJECT.DEFAULT_DURATION_MS,
                         offset: 0
                     });
 
@@ -161,7 +179,7 @@ export const StudioPanel: React.FC = () => {
         e.dataTransfer.setData('application/json', JSON.stringify({
             assetId: asset.id,
             name: asset.name,
-            duration: 5000 // Default duration, ideally we read metadata
+            duration: APP_CONFIG.PROJECT.DEFAULT_DURATION_MS // Default duration, ideally we read metadata
         }));
     };
 
@@ -199,12 +217,7 @@ export const StudioPanel: React.FC = () => {
         }
     };
         
-    const formatTime = (ms: number) => {
-        const seconds = Math.floor(ms / 1000);
-        const m = Math.floor(seconds / 60);
-        const s = seconds % 60;
-        return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-    };
+    const { formatTime } = useTimeFormat();
 
     // Sync Quality to Engine
     const previewQuality = useAppStore(state => state.previewQuality);
@@ -234,6 +247,72 @@ export const StudioPanel: React.FC = () => {
 
     const [isExporting, setIsExporting] = useState(false);
     const [exportProgress, setExportProgress] = useState(0);
+    const [isExportingGif, setIsExportingGif] = useState(false);
+
+    // Message Handler for Worker
+    useEffect(() => {
+        const handleExportMessage = (e: MessageEvent) => {
+            const { type, payload } = e.data;
+            if (type === 'EXPORT_PROGRESS') {
+                setExportProgress(payload);
+            } else if (type === 'EXPORT_COMPLETE') {
+                const url = URL.createObjectURL(payload);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `composition-${Date.now()}.mp4`;
+                a.click();
+                URL.revokeObjectURL(url);
+                setIsExporting(false);
+                setExportProgress(0);
+            } else if (type === 'GIF_START') {
+                 // Started
+            } else if (type === 'GIF_PROGRESS') {
+                setExportProgress(payload);
+            } else if (type === 'GIF_COMPLETE') {
+                const url = URL.createObjectURL(payload);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `animation-${Date.now()}.gif`;
+                a.click();
+                URL.revokeObjectURL(url);
+                setIsExportingGif(false);
+                setExportProgress(0);
+            } else if (type === 'GIF_ERROR') {
+                console.error("GIF Export Error:", payload);
+                setIsExportingGif(false);
+                setExportProgress(0);
+                alert("GIF Export Failed");
+            }
+        };
+
+        const worker = (window as any).frameflowEngine?.worker;
+        if (worker) worker.addEventListener('message', handleExportMessage);
+        
+        return () => {
+             const worker = (window as any).frameflowEngine?.worker;
+             if (worker) worker.removeEventListener('message', handleExportMessage);
+        };
+    }, []);
+
+    const handleExportGif = useCallback(() => {
+        if (isExportingGif || isExporting) return;
+        setIsExportingGif(true);
+        setExportProgress(0);
+        
+        // Use engine to post message
+        const engine = (window as any).frameflowEngine;
+        if (engine && engine.worker) {
+             const duration = timeline.duration;
+             engine.worker.postMessage({
+                type: 'EXPORT_GIF',
+                payload: {
+                    start: 0,
+                    duration: duration,
+                    fps: 15
+                }
+            });
+        }
+    }, [isExporting, isExportingGif, timeline.duration]);
 
     const handleExport = async () => {
         const engine = (window as any).frameflowEngine;
@@ -253,12 +332,109 @@ export const StudioPanel: React.FC = () => {
         }
     };
 
+
+    const [dragState, setDragState] = useState<{
+        clipId: string;
+        trackId: string;
+        startX: number;
+        originalStart: number;
+    } | null>(null);
+
+    const handleClipMouseDown = (e: React.MouseEvent, clipId: string, trackId: string) => {
+        const clip = timeline.tracks.find(t => t.id === trackId)?.clips.find(c => c.id === clipId);
+        if (!clip) return;
+        setDragState({
+            clipId,
+            trackId,
+            startX: e.clientX,
+            originalStart: clip.start
+        });
+    };
+
+    // Global mouse move/up handlers
+    useEffect(() => {
+        const handleMouseMove = (e: MouseEvent) => {
+            if (!dragState) return;
+            
+            e.preventDefault();
+            const deltaX = e.clientX - dragState.startX;
+            const deltaMs = (deltaX / timeline.zoom) * 1000;
+            let newStart = dragState.originalStart + deltaMs;
+            
+            if (newStart < 0) newStart = 0;
+            
+            // --- Magnetism ---
+            const SNAP_THRESHOLD_PX = 15;
+            const SNAP_THRESHOLD_MS = (SNAP_THRESHOLD_PX / timeline.zoom) * 1000;
+            
+            
+            // Snap Points: 0, Playhead, Other Clips (Start/End)
+            const snapPoints = [0, timeline.currentTime];
+            
+            // Gather other clips (optimization: memoize this if sluggish)
+            timeline.tracks.forEach(t => {
+                t.clips.forEach(c => {
+                    if (c.id === dragState.clipId) return; // Don't snap to self
+                    snapPoints.push(c.start);
+                    snapPoints.push(c.start + c.duration);
+                });
+            });
+            
+            // Find closest snap point
+            let closestDist = Infinity;
+            let closestPoint = -1;
+            
+            // Check Start
+            for (const p of snapPoints) {
+                const dist = Math.abs(newStart - p);
+                if (dist < SNAP_THRESHOLD_MS && dist < closestDist) {
+                    closestDist = dist;
+                    closestPoint = p;
+                }
+            }
+            
+            // Check End (dragged clip end snapping to points)
+            const clipDuration = timeline.tracks.find(t => t.id === dragState.trackId)?.clips.find(c => c.id === dragState.clipId)?.duration || 0;
+            const currentEnd = newStart + clipDuration;
+            
+            for (const p of snapPoints) {
+                const dist = Math.abs(currentEnd - p);
+                // Prioritize start snap if both close? No, closest wins.
+                if (dist < SNAP_THRESHOLD_MS && dist < closestDist) {
+                    closestDist = dist;
+                    closestPoint = p - clipDuration; // Calculate matching start
+                }
+            }
+            
+            if (closestDist < SNAP_THRESHOLD_MS) {
+                newStart = closestPoint;
+            }
+            
+            updateClip(dragState.clipId, { start: newStart });
+        };
+        
+        const handleMouseUp = () => {
+            if (dragState) {
+                setDragState(null);
+            }
+        };
+        
+        if (dragState) {
+            window.addEventListener('mousemove', handleMouseMove);
+            window.addEventListener('mouseup', handleMouseUp);
+        }
+        
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [dragState, timeline, updateClip]);
+
+
     return (
         <div className={`relative w-full bg-[#0a0a0a] border-t border-white/10 flex flex-col transition-all duration-300 z-50 ${isExpanded ? 'h-96' : 'h-16'}`} >
-            
-            {/* Monitor PIP (Restored) */}
-            {isExpanded && <PreviewMonitor />}
-
+            <TimelineContextMenu />
+            <TrackingOverlay />
             {/* Control Bar */}
             <div className="h-16 flex items-center px-6 gap-4 bg-[#0a0a0a] relative z-20">
                 
@@ -308,6 +484,12 @@ export const StudioPanel: React.FC = () => {
                         
                         <div className="h-6 w-px bg-white/10 mx-2" />
                         
+                        <div className="flex items-center gap-2">
+                             <RecorderControls />
+                        </div>
+
+                        <div className="h-6 w-px bg-white/10 mx-2" />
+                        
                         {/* Playback Controls */}
                         <div className="flex items-center gap-2">
                             <button className="p-2 hover:bg-white/10 rounded-full text-white/70" onClick={() => setTimelineTime(0)}>
@@ -348,6 +530,32 @@ export const StudioPanel: React.FC = () => {
                         >
                             <Download className="w-3 h-3 pointer-events-none" />
                             {isExporting ? `Exporting ${Math.round(exportProgress)}%` : 'Export MP4'}
+                        </button>
+                        <button 
+                            onClick={handleExportGif}
+                            disabled={isExporting}
+                            className="bg-green-600 hover:bg-green-500 text-white text-xs px-3 py-1 rounded font-medium disabled:opacity-50 flex items-center gap-2"
+                        >
+                            <FileVideo className="w-3 h-3 pointer-events-none" />
+                            {isExportingGif ? `${Math.round(exportProgress * 100)}%` : 'GIF'}
+                        </button>
+                        
+                        <div className="h-6 w-px bg-white/10 mx-2" />
+                        
+                        <button 
+                            onClick={() => setShowTemplateGallery(true)}
+                            className="text-white/70 hover:text-white text-xs px-2 py-1 flex items-center gap-1"
+                        >
+                            <FilePlus className="w-3 h-3" /> Templates
+                        </button>
+                         <button 
+                            onClick={() => {
+                                const name = prompt("Enter template name:");
+                                if (name) saveAsTemplate(name);
+                            }}
+                            className="text-white/70 hover:text-white text-xs px-2 py-1 flex items-center gap-1"
+                        >
+                            <Save className="w-3 h-3" /> Save Template
                         </button>
                     </div>
                 )}
@@ -406,6 +614,7 @@ export const StudioPanel: React.FC = () => {
                                         onDragOver={handleTrackDragOver}
                                         onDragLeave={handleTrackDragLeave}
                                         onDrop={(e) => handleTrackDrop(e, track.id)}
+                                        onClick={() => setSelectedClips([])}
                                     >
                                         {/* Timeline Ruler */}
 
@@ -417,26 +626,51 @@ export const StudioPanel: React.FC = () => {
                                         </div>
                                         
                                         {/* Clips */}
-                                        {track.clips.map(clip => (
-                                            <div 
-                                                key={clip.id}
-                                                className="absolute top-2 bottom-2 bg-blue-900/50 border border-blue-500/50 rounded overflow-hidden cursor-pointer hover:brightness-110 active:brightness-125 z-10"
-                                                style={{
-                                                    left: `${(clip.start / 1000) * timeline.zoom}px`,
-                                                    width: `${(clip.duration / 1000) * timeline.zoom}px`
-                                                }}
-                                                title={clip.name}
-                                            >
-                                                <div className="px-1 py-0.5 text-[10px] text-white/90 truncate bg-black/40 w-full">
-                                                    {clip.name}
+                                        {track.clips.map(clip => {
+                                            const isSelected = selectedClipIds.includes(clip.id);
+                                            // Calculate clip width in pixels for waveform resolution
+                                            const clipWidthPx = (clip.duration / 1000) * timeline.zoom;
+                                            
+                                            return (
+                                                <div 
+                                                    key={clip.id}
+                                                    className={`absolute top-1 bottom-1 rounded cursor-move transition-shadow ${isSelected ? 'ring-2 ring-indigo-500 shadow-lg shadow-indigo-500/30' : ''} ${track.type === 'audio' ? 'bg-green-600/80' : 'bg-indigo-600/80'}`}
+                                                    style={{
+                                                        left: `${(clip.start / 1000) * timeline.zoom}px`,
+                                                        width: `${clipWidthPx}px`,
+                                                        minWidth: '10px'
+                                                    }}
+                                                    onMouseDown={(e: React.MouseEvent) => handleClipMouseDown(e, clip.id, track.id)}
+                                                    onContextMenu={(e: React.MouseEvent) => {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        setContextMenu({
+                                                            isOpen: true,
+                                                            x: e.clientX,
+                                                            y: e.clientY,
+                                                            type: 'clip',
+                                                            targetId: clip.id
+                                                        });
+                                                        if (!isSelected) {
+                                                            setSelectedClips([clip.id]);
+                                                        }
+                                                    }}
+                                                >
+                                                    <span className="text-xs text-white/70 px-2 truncate block py-1">{clip.name}</span>
+                                                    <WaveformClip 
+                                                        assetId={clip.assetId} 
+                                                        width={clipWidthPx} 
+                                                        height={80} 
+                                                        color="rgba(255,255,255,0.2)" 
+                                                        className="absolute inset-0" 
+                                                    />
                                                 </div>
-                                                <div className="w-full h-full opacity-30 bg-repeat-x" style={{ backgroundImage: 'linear-gradient(90deg, transparent 50%, rgba(255,255,255,0.2) 50%)', backgroundSize: '4px 100%' }}></div>
-                                            </div>
-                                        ))}
+                                            );
+                                        })}
                                     </div>
                                 ))}
                             </div>
-                            
+
                             {/* Playhead */}
                              <div 
                                  ref={playheadRef}
@@ -448,6 +682,9 @@ export const StudioPanel: React.FC = () => {
                         </div>
                     </div>
                 </div>
+                
+                {/* Effects Rack */}
+                <EffectsRack />
 
                 {/* Asset Bin Drawer */}
                 <div className={`w-64 bg-[#0a0a0a] border-l border-white/10 flex flex-col transition-all duration-300 ${showAssetBin ? 'mr-0' : '-mr-64'}`}>
@@ -475,6 +712,7 @@ export const StudioPanel: React.FC = () => {
                      </div>
                 </div>
             </div>
+            {showTemplateGallery && <TemplateGallery onClose={() => setShowTemplateGallery(false)} />}
         </div>
     );
 };

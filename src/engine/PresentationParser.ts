@@ -6,10 +6,21 @@ export interface ParsedSlide {
   index: number;
   previewUrl?: string; // Blob URL of the background or thumbnail
   title?: string;
+  elements?: ParsedElement[];
+}
+
+export interface ParsedElement {
+    type: 'image' | 'text';
+    content: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
 }
 
 export class PresentationParser {
   private parser: XMLParser;
+  private zip: JSZip | null = null;
 
   constructor() {
     this.parser = new XMLParser({
@@ -19,88 +30,103 @@ export class PresentationParser {
   }
 
   async parsePPTX(file: File): Promise<ParsedSlide[]> {
-    const zip = await JSZip.loadAsync(file);
-    const slides: ParsedSlide[] = [];
+    try {
+        this.zip = await JSZip.loadAsync(file);
+        const slideFiles = this.findSlideFiles();
 
-    // 1. Read [Content_Types].xml to find slides? 
-    // Or just look for ppt/slides/slideX.xml structure which is standard.
-    
-    // Find all slide files
-    const slideFiles = Object.keys(zip.files).filter(path => 
-      path.match(/ppt\/slides\/slide\d+\.xml/)
-    );
+        const slides: ParsedSlide[] = [];
 
-    // Sort by number (slide1, slide2, ..., slide10 - needs numeric sort)
-    slideFiles.sort((a, b) => {
-        const numA = parseInt(a.match(/slide(\d+)\.xml/)![1]);
-        const numB = parseInt(b.match(/slide(\d+)\.xml/)![1]);
-        return numA - numB;
-    });
-
-    console.log(`Found ${slideFiles.length} slides`);
-
-    // 2. Extract relationships to find images
-    // slide1.xml.rels contains links to images
-    
-    for (let i = 0; i < slideFiles.length; i++) {
-        const slidePath = slideFiles[i];
-        const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
-        
-        let backgroundUrl = undefined;
-
-        // Try to find background image in relationships
-        if (zip.files[relsPath]) {
-            const relsXml = await zip.files[relsPath].async('string');
-            const rels = this.parser.parse(relsXml);
+        for (let i = 0; i < slideFiles.length; i++) {
+            const slidePath = slideFiles[i];
+            const slideNumber = i + 1;
             
-            // Look for image relationships
-            const relationships = rels.Relationships.Relationship;
-            const relsArray = Array.isArray(relationships) ? relationships : [relationships];
+            // 1. Get Preview Image (Background or First Image)
+            const previewUrl = await this.extractSlidePreview(slidePath);
             
-            // Filter for images. Usually used in blipFill -> blip -> embed
-            // We need to parse the slide XML to see WHICH r:id is the background.
-            // But for a quick hack, let's just grab the FIRST image? 
-            // Or maybe look for the biggest image?
-            // PPTX often stores background in the slideLayout, not the slide itself if it's master based.
-            // But let's check for direct images.
-            
-            // For MVP: Let's extract specific valid image extensions
-            const imageRels = relsArray.filter((r: any) => 
-                r['@_Target'].match(/\.(png|jpg|jpeg|gif)$/i)
-            );
+            // 2. Parse basic elements (Future work: extract text/layout)
+            const elements = await this.extractSlideElements(slidePath);
 
-            if (imageRels.length > 0) {
-                // Take the first one for now (often the background or main visual)
-                // We need to resolve the path. relative to ppt/slides/
-                // Target is usually "../media/image1.png"
-                let target = imageRels[0]['@_Target'];
-                if (target.startsWith('../')) {
-                    target = target.replace('../', 'ppt/');
-                }
-
-                if (zip.files[target]) {
-                    const imgBlob = await zip.files[target].async('blob');
-                    backgroundUrl = URL.createObjectURL(imgBlob);
-                }
-            }
+            slides.push({
+                id: `slide-${slideNumber}`,
+                index: slideNumber,
+                previewUrl: previewUrl,
+                title: `Slide ${slideNumber}`,
+                elements: elements
+            });
         }
 
-        // If no image found in slide, maybe it's using a layout?
-        // Skip for now.
-        
-        // If we still have no image, let's create a placeholder text
-        // Parse slide XML for text?
-        // const slideXml = await zip.files[slidePath].async('string');
-        // ...
-
-        slides.push({
-            id: `slide-${i + 1}`,
-            index: i + 1,
-            previewUrl: backgroundUrl,
-            title: `Slide ${i + 1}`
-        });
+        return slides;
+    } catch (e) {
+        console.error("PresentationParsing Error:", e);
+        throw new Error("Failed to parse presentation.");
+    } finally {
+        // Cleanup if needed? JSZip doesn't really need close.
     }
+  }
 
-    return slides;
+  private findSlideFiles(): string[] {
+      if (!this.zip) return [];
+      
+      const slideFiles = Object.keys(this.zip.files).filter(path => 
+        path.match(/ppt\/slides\/slide\d+\.xml/)
+      );
+
+      // Numeric Sort
+      return slideFiles.sort((a, b) => {
+          const numA = parseInt(a.match(/slide(\d+)\.xml/)![1]);
+          const numB = parseInt(b.match(/slide(\d+)\.xml/)![1]);
+          return numA - numB;
+      });
+  }
+
+  private async extractSlidePreview(slidePath: string): Promise<string | undefined> {
+      if (!this.zip) return undefined;
+
+      const relsPath = slidePath.replace('ppt/slides/', 'ppt/slides/_rels/') + '.rels';
+      if (!this.zip.files[relsPath]) return undefined;
+
+      try {
+        const relsXml = await this.zip.files[relsPath].async('string');
+        const rels = this.parser.parse(relsXml);
+        
+        const relationships = rels.Relationships.Relationship;
+        const relsArray = Array.isArray(relationships) ? relationships : [relationships];
+
+        // Find image relationships
+        const imageRels = relsArray.filter((r: any) => 
+            r['@_Target'] && r['@_Target'].match(/\.(png|jpg|jpeg|gif)$/i)
+        );
+
+        if (imageRels.length > 0) {
+            // MVP: Grab the first image as preview
+            let target = imageRels[0]['@_Target'];
+            const resolvedPath = this.resolvePath(target);
+            
+            if (this.zip.files[resolvedPath]) {
+                const imgBlob = await this.zip.files[resolvedPath].async('blob');
+                return URL.createObjectURL(imgBlob);
+            }
+        }
+      } catch (e) {
+          console.warn(`Failed to extract preview for ${slidePath}`, e);
+      }
+      return undefined;
+  }
+
+  private async extractSlideElements(slidePath: string): Promise<ParsedElement[]> {
+      // Stub for future element parsing (Text, custom shapes)
+      return [];
+  }
+
+  private resolvePath(target: string): string {
+      // Targets are usually relative to the relationship file, e.g. "../media/image1.png"
+      // Or they might be absolute in the zip context?
+      // PPTX structure usually: ppt/slides/_rels/slide1.xml.rels
+      // Relative path: "../media/image1.png" -> ppt/media/image1.png
+      
+      if (target.startsWith('../')) {
+          return target.replace('../', 'ppt/');
+      }
+      return target;
   }
 }

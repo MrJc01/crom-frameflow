@@ -120,6 +120,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                                      </button>
                                  </div>
                                  
+                                 {/* Preview FPS Control */}
+                                 <div className="space-y-3">
+                                     <div className="font-medium">Preview Framerate Limit</div>
+                                     <div className="flex gap-3">
+                                         {[30, 60, 120].map(fps => (
+                                             <button
+                                                 key={fps}
+                                                 onClick={() => updateSettings({ previewFps: fps })}
+                                                 className={`
+                                                     px-4 py-2 rounded-lg border text-sm transition-all flex-1
+                                                     ${settings.previewFps === fps 
+                                                         ? 'bg-green-500/20 border-green-500 text-green-200' 
+                                                         : 'bg-white/5 border-white/10 text-white/50 hover:bg-white/10'}
+                                                 `}
+                                             >
+                                                 {fps} FPS
+                                             </button>
+                                         ))}
+                                     </div>
+                                     <p className="text-xs text-white/40">
+                                         Lower FPS saves battery (30 recommended for laptops). Higher FPS is smoother.
+                                     </p>
+                                 </div>
+
                                  <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-sm">
                                      <strong>Warning:</strong> Adjusting internal engine parameters may cause instability.
                                  </div>
